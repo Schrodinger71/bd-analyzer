@@ -1,4 +1,4 @@
-name: Build and Release BD Scan
+name: Build and Release Fyne App
 
 on:
   push:
@@ -15,30 +15,30 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
 
-      - name: Install Fyne tool
+      - name: Install Fyne CLI
         run: go install fyne.io/tools/cmd/fyne@latest
 
-      - name: Download dependencies
+      - name: Download deps
         run: go mod tidy
 
-      - name: Build exe
-        run: go build -o bd-scan.exe ./cmd/app-gui
+      - name: Build app (required before fyne package)
+        run: go build -o app.exe ./cmd/app-gui
 
-      - name: Package with Fyne
-        run: fyne package --os windows --name "BD Scan" --icon internal/assets/icon.png --app-id com.tulgu.bdscan --executable bd-scan.exe
+      - name: Package with Fyne (official way)
+        run: fyne package -os windows -icon internal/assets/icon.png -app-id com.tulgu.bdscan
 
       - name: Rename output
-        run: move "BD Scan.exe" bd-scan-windows.exe
+        run: rename "BD Scan.exe" "bd-scan-windows.exe"
 
-      - name: Upload release
+      - name: Upload Release
         uses: softprops/action-gh-release@v1
         with:
           files: bd-scan-windows.exe
