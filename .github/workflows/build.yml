@@ -1,0 +1,46 @@
+name: Build and Release BD Scan
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install Fyne tool
+        run: go install fyne.io/tools/cmd/fyne@latest
+
+      - name: Download dependencies
+        run: go mod tidy
+
+      - name: Build exe
+        run: go build -o bd-scan.exe ./cmd/app-gui
+
+      - name: Package with Fyne
+        run: fyne package --os windows --name "BD Scan" --icon internal/assets/icon.png --app-id com.tulgu.bdscan --executable bd-scan.exe
+
+      - name: Rename output
+        run: move "BD Scan.exe" bd-scan-windows.exe
+
+      - name: Upload release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: bd-scan-windows.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
