@@ -11,12 +11,17 @@ import (
 
 func GuiInit() {
 	a := app.New()
-	a.Settings().SetTheme(theme.DarkTheme()) // ← теперь тёмная тема всегда включена
+	a.Settings().SetTheme(theme.DarkTheme())
 
 	window_root := a.NewWindow("BD Scan - Анализ защищённости СУБД")
 	window_root.Resize(fyne.NewSize(900, 500))
 	window_root.SetMaster()
 	window_root.CenterOnScreen()
+
+	icon, err := fyne.LoadResourceFromPath("internal/assets/icon.png")
+	if err == nil {
+		window_root.SetIcon(icon)
+	}
 
 	// Правая панель с прокруткой
 	rightScroller := container.NewVScroll(widget.NewLabel(""))
