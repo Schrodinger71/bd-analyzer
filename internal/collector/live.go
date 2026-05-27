@@ -3,7 +3,12 @@ package collector
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log"
+	"net"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,28 +73,28 @@ func collectFromDatabase(req Request) (model.ConfigSnapshot, error) {
 		sslMode = "prefer"
 	}
 
-	dsn := fmt.Sprintf(
-		"host=%s port=%d dbname=%s user=%s password=%s sslmode=%s",
-		strings.TrimSpace(req.Host),
-		port,
-		databaseName,
-		strings.TrimSpace(req.User),
-		req.Password,
-		sslMode,
-	)
+	dsn := buildPostgresDSN(req, port, databaseName, sslMode)
+	log.Printf("collector: live collect started (host=%s port=%d db=%s sslmode=%s)", strings.TrimSpace(req.Host), port, databaseName, sslMode)
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		return model.ConfigSnapshot{}, fmt.Errorf("не удалось открыть соединение с PostgreSQL: %w", err)
 	}
 	defer db.Close()
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(30 * time.Second)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer pingCancel()
 
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.PingContext(pingCtx); err != nil {
 		return model.ConfigSnapshot{}, fmt.Errorf("не удалось подключиться к PostgreSQL: %w", err)
 	}
+	log.Printf("collector: ping ok")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Second)
+	defer cancel()
 
 	snapshot := model.ConfigSnapshot{
 		Target: databaseName,
@@ -103,19 +108,58 @@ func collectFromDatabase(req Request) (model.ConfigSnapshot, error) {
 		Parameters: make(map[string]model.ConfigParameter),
 	}
 
+	log.Printf("collector: pg_settings started")
 	if err := collectSettings(ctx, db, &snapshot); err != nil {
 		return snapshot, err
 	}
+	log.Printf("collector: pg_settings finished (%d params)", len(snapshot.Parameters))
+	log.Printf("collector: pg_roles started")
 	collectRoles(ctx, db, &snapshot)
+	log.Printf("collector: pg_roles finished (%d roles)", len(snapshot.Roles))
+	log.Printf("collector: pg_hba_file_rules started")
 	collectHBARules(ctx, db, &snapshot)
+	log.Printf("collector: pg_hba_file_rules finished (%d rules)", len(snapshot.HBARules))
+	log.Printf("collector: pg_ident_file_mappings started")
 	collectIdentMaps(ctx, db, &snapshot)
+	log.Printf("collector: pg_ident_file_mappings finished (%d maps)", len(snapshot.IdentMaps))
 	inferAuditSettings(&snapshot)
+	log.Printf("collector: live collect finished")
 
 	return snapshot, nil
 }
 
+func buildPostgresDSN(req Request, port int, databaseName, sslMode string) string {
+	query := url.Values{}
+	query.Set("connect_timeout", "5")
+	query.Set("sslmode", sslMode)
+	query.Set("statement_timeout", "10000")
+	query.Set("lock_timeout", "3000")
+	query.Set("idle_in_transaction_session_timeout", "10000")
+	query.Set("application_name", "bd-analyzer")
+
+	dsn := &url.URL{
+		Scheme:   "postgres",
+		Host:     net.JoinHostPort(strings.TrimSpace(req.Host), strconv.Itoa(port)),
+		Path:     "/" + databaseName,
+		RawQuery: query.Encode(),
+	}
+
+	user := strings.TrimSpace(req.User)
+	switch {
+	case user != "" && req.Password != "":
+		dsn.User = url.UserPassword(user, req.Password)
+	case user != "":
+		dsn.User = url.User(user)
+	}
+
+	return dsn.String()
+}
+
 func collectSettings(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnapshot) error {
-	rows, err := db.QueryContext(ctx, `
+	queryCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(queryCtx, `
 		select
 			name,
 			setting,
@@ -123,7 +167,7 @@ func collectSettings(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnap
 		from pg_settings
 	`)
 	if err != nil {
-		return fmt.Errorf("не удалось получить параметры из pg_settings: %w", err)
+		return formatLiveQueryError("не удалось получить параметры из pg_settings", err)
 	}
 	defer rows.Close()
 
@@ -132,7 +176,7 @@ func collectSettings(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnap
 		var value string
 		var source string
 		if err := rows.Scan(&name, &value, &source); err != nil {
-			return fmt.Errorf("ошибка чтения строки pg_settings: %w", err)
+			return formatLiveQueryError("ошибка чтения строки pg_settings", err)
 		}
 
 		normalizedName := strings.ToLower(strings.TrimSpace(name))
@@ -144,7 +188,7 @@ func collectSettings(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnap
 	}
 
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("ошибка чтения результатов pg_settings: %w", err)
+		return formatLiveQueryError("ошибка чтения результатов pg_settings", err)
 	}
 
 	if param, ok := snapshot.Parameters["config_file"]; ok {
@@ -161,7 +205,10 @@ func collectSettings(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnap
 }
 
 func collectRoles(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnapshot) {
-	rows, err := db.QueryContext(ctx, `
+	queryCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(queryCtx, `
 		select
 			r.rolname,
 			r.rolcanlogin,
@@ -177,7 +224,7 @@ func collectRoles(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnapsho
 		order by r.rolname
 	`)
 	if err != nil {
-		snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, fmt.Sprintf("не удалось получить роли из pg_roles: %v", err))
+		snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, formatLiveQueryError("не удалось получить роли из pg_roles", err).Error())
 		return
 	}
 	defer rows.Close()
@@ -186,7 +233,7 @@ func collectRoles(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnapsho
 		var role model.Role
 		var memberships string
 		if err := rows.Scan(&role.Name, &role.Login, &role.Superuser, &role.Replication, &role.BypassRLS, &role.Inherit, &memberships); err != nil {
-			snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, fmt.Sprintf("ошибка чтения роли из pg_roles: %v", err))
+			snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, formatLiveQueryError("ошибка чтения роли из pg_roles", err).Error())
 			return
 		}
 		if memberships != "" {
@@ -194,10 +241,16 @@ func collectRoles(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnapsho
 		}
 		snapshot.Roles = append(snapshot.Roles, role)
 	}
+	if err := rows.Err(); err != nil {
+		snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, formatLiveQueryError("ошибка чтения результатов pg_roles", err).Error())
+	}
 }
 
 func collectHBARules(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnapshot) {
-	rows, err := db.QueryContext(ctx, `
+	queryCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(queryCtx, `
 		select
 			line_number,
 			type,
@@ -211,7 +264,7 @@ func collectHBARules(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnap
 		order by line_number
 	`)
 	if err != nil {
-		snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, fmt.Sprintf("не удалось получить правила pg_hba_file_rules: %v", err))
+		snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, formatLiveQueryError("не удалось получить правила pg_hba_file_rules", err).Error())
 		return
 	}
 	defer rows.Close()
@@ -221,7 +274,7 @@ func collectHBARules(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnap
 		var options string
 		var parseErr string
 		if err := rows.Scan(&rule.SourceLine, &rule.Type, &rule.Database, &rule.User, &rule.Address, &rule.Method, &options, &parseErr); err != nil {
-			snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, fmt.Sprintf("ошибка чтения pg_hba_file_rules: %v", err))
+			snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, formatLiveQueryError("ошибка чтения pg_hba_file_rules", err).Error())
 			return
 		}
 
@@ -236,10 +289,16 @@ func collectHBARules(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnap
 		}
 		snapshot.HBARules = append(snapshot.HBARules, rule)
 	}
+	if err := rows.Err(); err != nil {
+		snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, formatLiveQueryError("ошибка чтения результатов pg_hba_file_rules", err).Error())
+	}
 }
 
 func collectIdentMaps(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnapshot) {
-	rows, err := db.QueryContext(ctx, `
+	queryCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+
+	rows, err := db.QueryContext(queryCtx, `
 		select
 			line_number,
 			coalesce(map_name, ''),
@@ -250,7 +309,7 @@ func collectIdentMaps(ctx context.Context, db *sql.DB, snapshot *model.ConfigSna
 		order by line_number
 	`)
 	if err != nil {
-		snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, fmt.Sprintf("не удалось получить правила pg_ident_file_mappings: %v", err))
+		snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, formatLiveQueryError("не удалось получить правила pg_ident_file_mappings", err).Error())
 		return
 	}
 	defer rows.Close()
@@ -259,13 +318,16 @@ func collectIdentMaps(ctx context.Context, db *sql.DB, snapshot *model.ConfigSna
 		var mapping model.IdentMap
 		var parseErr string
 		if err := rows.Scan(&mapping.SourceLine, &mapping.MapName, &mapping.SystemUser, &mapping.DatabaseUser, &parseErr); err != nil {
-			snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, fmt.Sprintf("ошибка чтения pg_ident_file_mappings: %v", err))
+			snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, formatLiveQueryError("ошибка чтения pg_ident_file_mappings", err).Error())
 			return
 		}
 		if parseErr != "" {
 			snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, fmt.Sprintf("строка ident %d: %s", mapping.SourceLine, parseErr))
 		}
 		snapshot.IdentMaps = append(snapshot.IdentMaps, mapping)
+	}
+	if err := rows.Err(); err != nil {
+		snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, formatLiveQueryError("ошибка чтения результатов pg_ident_file_mappings", err).Error())
 	}
 }
 
@@ -302,10 +364,10 @@ func mergeLiveSnapshot(snapshot *model.ConfigSnapshot, live model.ConfigSnapshot
 		snapshot.Parameters[key] = value
 	}
 
-	if len(snapshot.HBARules) == 0 && len(live.HBARules) > 0 {
+	if len(live.HBARules) > 0 {
 		snapshot.HBARules = live.HBARules
 	}
-	if len(snapshot.IdentMaps) == 0 && len(live.IdentMaps) > 0 {
+	if len(live.IdentMaps) > 0 {
 		snapshot.IdentMaps = live.IdentMaps
 	}
 	if len(live.Roles) > 0 {
@@ -317,4 +379,14 @@ func mergeLiveSnapshot(snapshot *model.ConfigSnapshot, live model.ConfigSnapshot
 	}
 
 	snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, live.CollectionWarnings...)
+}
+
+func formatLiveQueryError(message string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%s: превышен таймаут ожидания", message)
+	}
+	return fmt.Errorf("%s: %w", message, err)
 }

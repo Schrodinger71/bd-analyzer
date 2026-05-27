@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"bd-scan/internal/collector"
@@ -51,16 +52,16 @@ func modernGuiInit() {
 	identEntry := widget.NewEntry()
 	metaEntry := widget.NewEntry()
 
-	collectionPreview := widget.NewMultiLineEntry()
-	collectionPreview.Disable()
+	collectionPreview := widget.NewLabel("")
+	collectionPreview.Wrapping = fyne.TextWrapWord
 	collectionPreview.SetText("После проверки здесь появится сводка по собранной конфигурации.")
 
-	analysisLog := widget.NewMultiLineEntry()
-	analysisLog.Disable()
+	analysisLog := widget.NewLabel("")
+	analysisLog.Wrapping = fyne.TextWrapWord
 	analysisLog.SetText("Журнал анализа появится после запуска проверки.")
 
-	reportPreview := widget.NewMultiLineEntry()
-	reportPreview.Disable()
+	reportPreview := widget.NewLabel("")
+	reportPreview.Wrapping = fyne.TextWrapWord
 	reportPreview.SetText("После завершения анализа здесь появится текстовый отчет.")
 
 	statusLabel := widget.NewLabel("Ожидание запуска.")
@@ -88,10 +89,10 @@ func modernGuiInit() {
 	collectRequest := func() collector.Request {
 		return collector.Request{
 			Target:         strings.TrimSpace(targetEntry.Text),
-			PostgreSQLConf: strings.TrimSpace(confEntry.Text),
-			HBAConf:        strings.TrimSpace(hbaEntry.Text),
-			IdentConf:      strings.TrimSpace(identEntry.Text),
-			MetadataJSON:   strings.TrimSpace(metaEntry.Text),
+			PostgreSQLConf: normalizeOptionalPath(confEntry.Text),
+			HBAConf:        normalizeOptionalPath(hbaEntry.Text),
+			IdentConf:      normalizeOptionalPath(identEntry.Text),
+			MetadataJSON:   normalizeOptionalPath(metaEntry.Text),
 		}
 	}
 
@@ -100,7 +101,7 @@ func modernGuiInit() {
 		progress.Start()
 		statusLabel.SetText("Выполняется сбор и нормализация конфигурации...")
 
-		snapshot, err := collector.Collect(collectRequest())
+		snapshot, err := collector.CollectWithTimeout(collectRequest(), collector.DefaultLiveCollectionTimeout)
 		progress.Stop()
 		progress.Hide()
 		if err != nil {
@@ -157,6 +158,22 @@ func modernGuiInit() {
 			return
 		}
 
+		if path, handled, pickErr := tryPickSavePath("bd-analyzer-report."+format.Extension(), format.Extension()); handled {
+			if pickErr != nil {
+				dialog.ShowError(pickErr, window)
+				return
+			}
+			if path == "" {
+				return
+			}
+			if writeErr := os.WriteFile(path, data, 0o644); writeErr != nil {
+				dialog.ShowError(writeErr, window)
+				return
+			}
+			dialog.ShowInformation("Экспорт отчета", fmt.Sprintf("Отчет сохранен: %s", path), window)
+			return
+		}
+
 		saveDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, saveErr error) {
 			if saveErr != nil {
 				dialog.ShowError(saveErr, window)
@@ -165,7 +182,6 @@ func modernGuiInit() {
 			if writer == nil {
 				return
 			}
-			defer writer.Close()
 
 			if _, writeErr := writer.Write(data); writeErr != nil {
 				dialog.ShowError(writeErr, window)
@@ -174,7 +190,11 @@ func modernGuiInit() {
 
 			path := ""
 			if writer.URI() != nil {
-				path = writer.URI().String()
+				path = pathFromURI(writer.URI())
+			}
+			if closeErr := writer.Close(); closeErr != nil {
+				dialog.ShowError(closeErr, window)
+				return
 			}
 			dialog.ShowInformation("Экспорт отчета", fmt.Sprintf("Отчет сохранен: %s", path), window)
 		}, window)
@@ -257,6 +277,17 @@ func modernGuiInit() {
 
 func newPathPicker(window fyne.Window, entry *widget.Entry, extensions []string) fyne.CanvasObject {
 	button := widget.NewButton("Обзор...", func() {
+		if path, handled, pickErr := tryPickOpenPath(extensions); handled {
+			if pickErr != nil {
+				dialog.ShowError(pickErr, window)
+				return
+			}
+			if path != "" {
+				entry.SetText(path)
+			}
+			return
+		}
+
 		fileDialog := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 			if err != nil {
 				dialog.ShowError(err, window)
@@ -265,8 +296,12 @@ func newPathPicker(window fyne.Window, entry *widget.Entry, extensions []string)
 			if reader == nil {
 				return
 			}
-			defer reader.Close()
-			entry.SetText(reader.URI().String())
+			path := pathFromURI(reader.URI())
+			if closeErr := reader.Close(); closeErr != nil {
+				dialog.ShowError(closeErr, window)
+				return
+			}
+			entry.SetText(path)
 		}, window)
 		fileDialog.SetFilter(storage.NewExtensionFileFilter(extensions))
 		fileDialog.Show()

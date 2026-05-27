@@ -30,7 +30,7 @@ func Build(snapshot model.ConfigSnapshot) model.NormalizedConfig {
 			normalized.WeakHBARules = append(normalized.WeakHBARules, rule)
 		}
 
-		if address == "0.0.0.0/0" || address == "::/0" {
+		if address == "0.0.0.0/0" || address == "::/0" || address == "all" {
 			normalized.OpenHBARules = append(normalized.OpenHBARules, rule)
 		}
 	}

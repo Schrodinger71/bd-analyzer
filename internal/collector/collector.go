@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"bd-scan/internal/model"
 )
@@ -25,6 +26,14 @@ type Request struct {
 	MetadataJSON   string
 }
 
+type localSourceReadPlan struct {
+	postgresqlConf string
+	hbaConf        string
+	identConf      string
+}
+
+const DefaultLiveCollectionTimeout = 20 * time.Second
+
 func Collect(req Request) (model.ConfigSnapshot, error) {
 	snapshot := model.ConfigSnapshot{
 		Target:     req.Target,
@@ -37,6 +46,7 @@ func Collect(req Request) (model.ConfigSnapshot, error) {
 		},
 		Parameters: make(map[string]model.ConfigParameter),
 	}
+	readPlan := buildLocalSourceReadPlan(req)
 
 	liveSnapshot, hasLiveData, err := maybeCollectLive(req)
 	if err != nil {
@@ -63,41 +73,40 @@ func Collect(req Request) (model.ConfigSnapshot, error) {
 		snapshot.Sources.IdentConf = liveSnapshot.Sources.IdentConf
 	}
 
-	if snapshot.Sources.PostgreSQLConf != "" {
-		content, err := os.ReadFile(snapshot.Sources.PostgreSQLConf)
+	if readPlan.postgresqlConf != "" {
+		content, err := os.ReadFile(readPlan.postgresqlConf)
 		if err != nil {
-			if req.PostgreSQLConf != "" {
-				return snapshot, fmt.Errorf("не удалось прочитать postgresql.conf: %w", err)
-			}
-			snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, fmt.Sprintf("не удалось прочитать postgresql.conf по пути %q: %v", snapshot.Sources.PostgreSQLConf, err))
+			return snapshot, fmt.Errorf("не удалось прочитать postgresql.conf: %w", err)
 		} else {
-			params, warnings := parsePostgreSQLConf(string(content), snapshot.Sources.PostgreSQLConf)
+			params, warnings := parsePostgreSQLConf(string(content), readPlan.postgresqlConf)
 			for key, value := range params {
 				snapshot.Parameters[key] = value
 			}
 			snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, warnings...)
 
-			baseDir := filepath.Dir(snapshot.Sources.PostgreSQLConf)
-			if snapshot.Sources.HBAConf == "" {
+			baseDir := filepath.Dir(readPlan.postgresqlConf)
+			if readPlan.hbaConf == "" {
 				if param, ok := snapshot.Parameters["hba_file"]; ok && strings.TrimSpace(param.Value) != "" {
-					snapshot.Sources.HBAConf = normalizePath(baseDir, param.Value)
+					readPlan.hbaConf = normalizePath(baseDir, param.Value)
 				} else {
-					snapshot.Sources.HBAConf = filepath.Join(baseDir, "pg_hba.conf")
+					readPlan.hbaConf = filepath.Join(baseDir, "pg_hba.conf")
 				}
+				snapshot.Sources.HBAConf = readPlan.hbaConf
 			}
 
-			if snapshot.Sources.IdentConf == "" {
+			if readPlan.identConf == "" {
 				if param, ok := snapshot.Parameters["ident_file"]; ok && strings.TrimSpace(param.Value) != "" {
-					snapshot.Sources.IdentConf = normalizePath(baseDir, param.Value)
+					readPlan.identConf = normalizePath(baseDir, param.Value)
 				} else {
-					snapshot.Sources.IdentConf = filepath.Join(baseDir, "pg_ident.conf")
+					readPlan.identConf = filepath.Join(baseDir, "pg_ident.conf")
 				}
+				snapshot.Sources.IdentConf = readPlan.identConf
 			}
 		}
 	}
 
-	if snapshot.Sources.HBAConf != "" {
-		content, err := os.ReadFile(snapshot.Sources.HBAConf)
+	if readPlan.hbaConf != "" {
+		content, err := os.ReadFile(readPlan.hbaConf)
 		if err != nil {
 			snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, fmt.Sprintf("не удалось прочитать pg_hba.conf: %v", err))
 		} else {
@@ -107,8 +116,8 @@ func Collect(req Request) (model.ConfigSnapshot, error) {
 		}
 	}
 
-	if snapshot.Sources.IdentConf != "" {
-		content, err := os.ReadFile(snapshot.Sources.IdentConf)
+	if readPlan.identConf != "" {
+		content, err := os.ReadFile(readPlan.identConf)
 		if err != nil {
 			snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, fmt.Sprintf("не удалось прочитать pg_ident.conf: %v", err))
 		} else {
@@ -149,6 +158,45 @@ func Collect(req Request) (model.ConfigSnapshot, error) {
 	}
 
 	return snapshot, nil
+}
+
+func CollectWithTimeout(req Request, timeout time.Duration) (model.ConfigSnapshot, error) {
+	if !req.UsesLiveConnection() || timeout <= 0 {
+		return Collect(req)
+	}
+
+	type result struct {
+		snapshot model.ConfigSnapshot
+		err      error
+	}
+
+	done := make(chan result, 1)
+	go func() {
+		snapshot, err := Collect(req)
+		done <- result{snapshot: snapshot, err: err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case res := <-done:
+		return res.snapshot, res.err
+	case <-timer.C:
+		return model.ConfigSnapshot{}, fmt.Errorf("онлайн-сбор данных из PostgreSQL превысил лимит ожидания %s", timeout.Round(time.Second))
+	}
+}
+
+func (r Request) UsesLiveConnection() bool {
+	return strings.TrimSpace(r.Host) != "" || r.Port != 0 || strings.TrimSpace(r.User) != "" || strings.TrimSpace(r.Database) != ""
+}
+
+func buildLocalSourceReadPlan(req Request) localSourceReadPlan {
+	return localSourceReadPlan{
+		postgresqlConf: strings.TrimSpace(req.PostgreSQLConf),
+		hbaConf:        strings.TrimSpace(req.HBAConf),
+		identConf:      strings.TrimSpace(req.IdentConf),
+	}
 }
 
 func normalizePath(baseDir, value string) string {

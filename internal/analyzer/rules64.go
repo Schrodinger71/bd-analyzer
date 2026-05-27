@@ -371,10 +371,13 @@ func authLifecycleRule(config model.NormalizedConfig) model.Finding {
 	passwordEncryption := config.Param("password_encryption")
 	for _, check := range checks {
 		value, ok := config.BoolParam(check.param)
-		if !ok && check.acceptFromDB && (passwordEncryption == "scram-sha-256" || passwordEncryption == "md5") {
+		if !ok && check.acceptFromDB && passwordEncryption == "scram-sha-256" {
 			value = true
 			ok = true
-			evidence = append(evidence, fmt.Sprintf("Защищенное хранение частично подтверждено параметром password_encryption = %s.", passwordEncryption))
+			evidence = append(evidence, "Защищенное хранение частично подтверждено параметром password_encryption = scram-sha-256.")
+		}
+		if !ok && check.acceptFromDB && passwordEncryption == "md5" {
+			evidence = append(evidence, "Обнаружено password_encryption = md5, но этого недостаточно для подтверждения защищенного хранения аутентификационной информации.")
 		}
 		if !ok {
 			evidence = append(evidence, check.warnMessage)

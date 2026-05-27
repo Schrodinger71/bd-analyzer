@@ -2,7 +2,8 @@ package ui
 
 import (
 	"fmt"
-	"runtime"
+	"log"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -41,6 +42,9 @@ func GuiInit() {
 		class:  model.Class6,
 	}
 
+	targetEntry := widget.NewEntry()
+	targetEntry.SetText("PostgreSQL target")
+	liveCollectCheck := widget.NewCheck("Дополнительно собрать данные из живой PostgreSQL", nil)
 	hostEntry := widget.NewEntry()
 	hostEntry.SetText("localhost")
 	portEntry := widget.NewEntry()
@@ -57,22 +61,21 @@ func GuiInit() {
 	identEntry := widget.NewEntry()
 	metaEntry := widget.NewEntry()
 
-	collectionPreview := widget.NewMultiLineEntry()
-	collectionPreview.Disable()
-	collectionPreview.Wrapping = fyne.TextWrapBreak
+	collectionPreview := widget.NewLabel("")
+	collectionPreview.Wrapping = fyne.TextWrapWord
 	collectionPreview.SetText("Здесь появится результат сбора конфигурации из живой PostgreSQL и доступных файлов.")
 
-	analysisLog := widget.NewMultiLineEntry()
-	analysisLog.Disable()
-	analysisLog.Wrapping = fyne.TextWrapBreak
+	analysisLog := widget.NewLabel("")
+	analysisLog.Wrapping = fyne.TextWrapWord
 	analysisLog.SetText("Журнал анализа пока пуст.")
 
-	reportPreview := widget.NewMultiLineEntry()
-	reportPreview.Disable()
-	reportPreview.Wrapping = fyne.TextWrapBreak
+	reportPreview := widget.NewLabel("")
+	reportPreview.Wrapping = fyne.TextWrapWord
 	reportPreview.SetText("После анализа здесь появится текстовый отчет.")
 
 	statusLabel := widget.NewLabel("Ожидание запуска.")
+	progress := widget.NewProgressBarInfinite()
+	progress.Hide()
 	var busy atomic.Bool
 
 	classOptions := make([]string, 0, len(model.AvailableProtectionClasses()))
@@ -102,29 +105,77 @@ func GuiInit() {
 	}
 
 	buildRequest := func() collector.Request {
-		return collector.Request{
-			Host:           strings.TrimSpace(hostEntry.Text),
-			Port:           parsePort(),
-			Database:       strings.TrimSpace(dbEntry.Text),
-			User:           strings.TrimSpace(userEntry.Text),
-			Password:       passwordEntry.Text,
-			SSLMode:        strings.TrimSpace(sslModeSelect.Selected),
+		request := collector.Request{
 			PostgreSQLConf: sanitizeOptionalPath(confEntry.Text),
 			HBAConf:        sanitizeOptionalPath(hbaEntry.Text),
 			IdentConf:      sanitizeOptionalPath(identEntry.Text),
 			MetadataJSON:   sanitizeOptionalPath(metaEntry.Text),
-			Target:         strings.TrimSpace(dbEntry.Text),
+			Target:         strings.TrimSpace(targetEntry.Text),
 		}
+
+		if liveCollectCheck.Checked {
+			request.Host = strings.TrimSpace(hostEntry.Text)
+			request.Port = parsePort()
+			request.Database = strings.TrimSpace(dbEntry.Text)
+			request.User = strings.TrimSpace(userEntry.Text)
+			request.Password = passwordEntry.Text
+			request.SSLMode = strings.TrimSpace(sslModeSelect.Selected)
+			if request.Target == "" {
+				request.Target = request.Database
+			}
+		}
+
+		return request
 	}
 
 	showCollection := func(snapshot model.ConfigSnapshot, normalized model.NormalizedConfig) {
 		collectionPreview.SetText(buildCollectionSummary(snapshot, normalized))
 	}
 
+	updateConnectionState := func(enabled bool) {
+		if enabled {
+			hostEntry.Enable()
+			portEntry.Enable()
+			dbEntry.Enable()
+			userEntry.Enable()
+			passwordEntry.Enable()
+			sslModeSelect.Enable()
+			return
+		}
+
+		hostEntry.Disable()
+		portEntry.Disable()
+		dbEntry.Disable()
+		userEntry.Disable()
+		passwordEntry.Disable()
+		sslModeSelect.Disable()
+	}
+	liveCollectCheck.OnChanged = updateConnectionState
+	updateConnectionState(false)
+
 	var btnConfig, btnAnalyze, btnReport, btnAbout *widget.Button
+	var collectButton, analyzeButton, exportButton *widget.Button
 	setBusy := func(active bool, message string) {
 		busy.Store(active)
 		statusLabel.SetText(message)
+		if active {
+			progress.Show()
+			progress.Start()
+		} else {
+			progress.Stop()
+			progress.Hide()
+		}
+
+		for _, button := range []*widget.Button{collectButton, analyzeButton, exportButton} {
+			if button == nil {
+				continue
+			}
+			if active {
+				button.Disable()
+			} else {
+				button.Enable()
+			}
+		}
 	}
 
 	collectAction := func() {
@@ -134,21 +185,21 @@ func GuiInit() {
 		request := buildRequest()
 		setBusy(true, "Выполняется сбор конфигурации...")
 		collectionPreview.SetText("Выполняется сбор конфигурации. Пожалуйста, подождите...")
+		analysisLog.SetText("Сбор конфигурации запущен.")
 
-		go func() {
-			defer busy.Store(false)
+		snapshot, err := collector.CollectWithTimeout(request, collector.DefaultLiveCollectionTimeout)
+		if err != nil {
+			collectionPreview.SetText("Ошибка сбора конфигурации:\n" + err.Error())
+			analysisLog.SetText("Сбор конфигурации завершился ошибкой.\n" + err.Error())
+			setBusy(false, "Сбор конфигурации завершился ошибкой.")
+			return
+		}
 
-			snapshot, err := collector.Collect(request)
-			if err != nil {
-				collectionPreview.SetText("Ошибка сбора конфигурации:\n" + err.Error())
-				analysisLog.SetText("Сбор конфигурации завершился ошибкой.\n" + err.Error())
-				return
-			}
-
-			normalized := normalize.Build(snapshot)
-			showCollection(snapshot, normalized)
-			analysisLog.SetText(fmt.Sprintf("Сбор завершен: параметров %d, HBA-правил %d, ролей %d.", len(snapshot.Parameters), len(snapshot.HBARules), len(snapshot.Roles)))
-		}()
+		normalized := normalize.Build(snapshot)
+		completionMessage := fmt.Sprintf("Сбор завершен: параметров %d, HBA-правил %d, ролей %d.", len(snapshot.Parameters), len(snapshot.HBARules), len(snapshot.Roles))
+		showCollection(snapshot, normalized)
+		analysisLog.SetText(completionMessage)
+		setBusy(false, completionMessage)
 	}
 
 	runAnalysis := func() {
@@ -159,25 +210,42 @@ func GuiInit() {
 		class := state.class
 		setBusy(true, "Выполняется анализ защищенности...")
 		analysisLog.SetText("Выполняется анализ защищенности. Пожалуйста, подождите...")
+		reportPreview.SetText("Подготавливается отчет по результатам анализа...")
 
-		go func() {
-			defer busy.Store(false)
+		result, err := state.runner.Run(service.RunRequest{
+			CollectRequest: request,
+			Class:          class,
+		})
+		log.Printf("ui: runAnalysis returned from service.Run")
+		if err != nil {
+			analysisLog.SetText("Ошибка анализа защищенности:\n" + err.Error())
+			reportPreview.SetText("Отчет не сформирован из-за ошибки анализа.\n\n" + err.Error())
+			setBusy(false, "Анализ защищенности завершился ошибкой.")
+			return
+		}
 
-			result, err := state.runner.Run(service.RunRequest{
-				CollectRequest: request,
-				Class:          class,
-			})
-			if err != nil {
-				analysisLog.SetText("Ошибка анализа защищенности:\n" + err.Error())
-				reportPreview.SetText("Отчет не сформирован из-за ошибки анализа.\n\n" + err.Error())
-				return
-			}
-
-			state.lastRun = &result
-			showCollection(result.Snapshot, result.Normalized)
-			analysisLog.SetText(buildAnalysisLog(result.Analysis))
+		log.Printf("ui: building live/ui summaries")
+		analysisLogText := buildAnalysisLog(result.Analysis)
+		if request.UsesLiveConnection() {
+			analysisLogText = buildLiveAnalysisSummary(result.Analysis)
+		}
+		completionMessage := fmt.Sprintf("Анализ завершен: балл %d/100, предупреждений %d, несоответствий %d.", result.Analysis.Score, result.Analysis.Summary.Warnings, result.Analysis.Summary.Failed)
+		log.Printf("ui: assigning lastRun")
+		state.lastRun = &result
+		log.Printf("ui: updating collection preview")
+		showCollection(result.Snapshot, result.Normalized)
+		log.Printf("ui: updating analysis log")
+		analysisLog.SetText(analysisLogText)
+		if request.UsesLiveConnection() {
+			log.Printf("ui: updating live report preview placeholder")
+			reportPreview.SetText("Анализ завершен. Для живой PostgreSQL предварительный просмотр отчета отложен, чтобы не замедлять основной проход. Перейдите к сохранению отчета, когда будете готовы.")
+		} else {
+			log.Printf("ui: generating local report preview")
 			reportPreview.SetText(state.runner.Preview(result.Analysis))
-		}()
+		}
+		log.Printf("ui: clearing busy state")
+		setBusy(false, completionMessage)
+		log.Printf("ui: runAnalysis finished")
 	}
 
 	exportReport := func() {
@@ -198,6 +266,22 @@ func GuiInit() {
 			return
 		}
 
+		if path, handled, pickErr := tryPickSavePath("bd-analyzer-report."+format.Extension(), format.Extension()); handled {
+			if pickErr != nil {
+				dialog.ShowError(pickErr, window)
+				return
+			}
+			if path == "" {
+				return
+			}
+			if writeErr := os.WriteFile(path, data, 0o644); writeErr != nil {
+				dialog.ShowError(writeErr, window)
+				return
+			}
+			dialog.ShowInformation("Отчетность", fmt.Sprintf("Отчет сохранен: %s", path), window)
+			return
+		}
+
 		saveDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, saveErr error) {
 			if saveErr != nil {
 				dialog.ShowError(saveErr, window)
@@ -206,7 +290,6 @@ func GuiInit() {
 			if writer == nil {
 				return
 			}
-			defer writer.Close()
 
 			if _, writeErr := writer.Write(data); writeErr != nil {
 				dialog.ShowError(writeErr, window)
@@ -215,7 +298,11 @@ func GuiInit() {
 
 			path := ""
 			if writer.URI() != nil {
-				path = writer.URI().String()
+				path = pathFromURI(writer.URI())
+			}
+			if closeErr := writer.Close(); closeErr != nil {
+				dialog.ShowError(closeErr, window)
+				return
 			}
 			dialog.ShowInformation("Отчетность", fmt.Sprintf("Отчет сохранен: %s", path), window)
 		}, window)
@@ -252,10 +339,13 @@ func GuiInit() {
 	setContent = func(index int) {
 		switch index {
 		case 0:
+			collectButton = widget.NewButtonWithIcon("Начать сбор конфигурации", theme.ViewRefreshIcon(), collectAction)
 			box := container.NewVBox(
 				widget.NewLabelWithStyle("Модуль сбора конфигурации", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 				widget.NewSeparator(),
-				wrappedLabel("Подключитесь к существующей PostgreSQL по host/port/login/password. При наличии доступа к локальным путям приложение дополнительно дочитает postgresql.conf, pg_hba.conf и pg_ident.conf."),
+				wrappedLabel("Можно анализировать только локальные конфигурационные файлы или дополнительно дочитать сведения из живой PostgreSQL. Подключение к БД выполняется только если вы явно включите его ниже."),
+				compactField("Цель анализа", targetEntry),
+				liveCollectCheck,
 				widget.NewLabelWithStyle("Подключение", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 				compactField("Хост", hostEntry),
 				compactField("Порт", portEntry),
@@ -268,30 +358,32 @@ func GuiInit() {
 				compactField("pg_hba.conf", newPathPicker(window, hbaEntry, []string{".conf"})),
 				compactField("pg_ident.conf", newPathPicker(window, identEntry, []string{".conf"})),
 				compactField("metadata JSON", newPathPicker(window, metaEntry, []string{".json"})),
-				widget.NewButtonWithIcon("Начать сбор конфигурации", theme.ViewRefreshIcon(), collectAction),
+				collectButton,
 				collectionPreview,
 			)
 			rightScroller.Content = container.NewPadded(box)
 
 		case 1:
+			analyzeButton = widget.NewButtonWithIcon("Запустить анализ защищенности", theme.MediaPlayIcon(), runAnalysis)
 			box := container.NewVBox(
 				widget.NewLabelWithStyle("Модуль анализа защищенности", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 				widget.NewSeparator(),
 				wrappedLabel("Выберите профиль контроля и запустите анализ собранной конфигурации."),
 				classSelect,
-				widget.NewButtonWithIcon("Запустить анализ защищенности", theme.MediaPlayIcon(), runAnalysis),
+				analyzeButton,
 				widget.NewLabel("Журнал выполнения:"),
 				analysisLog,
 			)
 			rightScroller.Content = container.NewPadded(box)
 
 		case 2:
+			exportButton = widget.NewButtonWithIcon("Сохранить отчет", theme.DocumentSaveIcon(), exportReport)
 			box := container.NewVBox(
 				widget.NewLabelWithStyle("Модуль формирования отчетности", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 				widget.NewSeparator(),
 				wrappedLabel("Сформируйте и сохраните отчет по результатам последнего анализа."),
 				formatSelect,
-				widget.NewButtonWithIcon("Сохранить отчет", theme.DocumentSaveIcon(), exportReport),
+				exportButton,
 				widget.NewSeparator(),
 				widget.NewLabel("Предварительный просмотр:"),
 				reportPreview,
@@ -333,7 +425,7 @@ func GuiInit() {
 	topButtons := widget.NewVBox(btnConfig, btnAnalyze, btnReport)
 	leftPanel := container.NewBorder(nil, btnAbout, nil, nil, topButtons)
 
-	footer := container.NewHBox(layout.NewSpacer(), statusLabel, layout.NewSpacer(), widget.NewLabel("BD Scan v1.0"))
+	footer := container.NewHBox(progress, layout.NewSpacer(), statusLabel, layout.NewSpacer(), widget.NewLabel("BD Scan v1.0"))
 
 	setContent(0)
 
@@ -362,15 +454,36 @@ func wrappedLabel(text string) *widget.Label {
 	return label
 }
 
+func buildLiveAnalysisSummary(result model.AnalysisResult) string {
+	var builder strings.Builder
+
+	builder.WriteString("РЕЗУЛЬТАТ ОНЛАЙН-АНАЛИЗА ЖИВОЙ PostgreSQL\n")
+	builder.WriteString("========================================\n")
+	builder.WriteString(fmt.Sprintf("Профиль контроля: %s\n", result.Class.Label()))
+	builder.WriteString(fmt.Sprintf("Итоговый балл: %d/100\n", result.Score))
+	builder.WriteString(fmt.Sprintf("Успешно: %d\n", result.Summary.Passed))
+	builder.WriteString(fmt.Sprintf("Предупреждения: %d\n", result.Summary.Warnings))
+	builder.WriteString(fmt.Sprintf("Несоответствия: %d\n", result.Summary.Failed))
+
+	issues := result.NonPassingFindings()
+	if len(issues) > 0 {
+		builder.WriteString("\nКлючевые замечания:\n")
+		for _, finding := range issues {
+			builder.WriteString(fmt.Sprintf("- [%s] %s\n", strings.ToUpper(string(finding.Status)), finding.Title))
+		}
+	}
+
+	if len(result.Notes) > 0 {
+		builder.WriteString("\nПримечания сбора:\n")
+		for _, note := range result.Notes {
+			builder.WriteString("- " + shortenUIString(note, 120) + "\n")
+		}
+	}
+
+	builder.WriteString("\nПодробный отчет можно сохранить через вкладку отчетности.")
+	return builder.String()
+}
+
 func sanitizeOptionalPath(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-
-	if runtime.GOOS == "windows" && strings.HasPrefix(value, "/") {
-		return ""
-	}
-
-	return value
+	return normalizeOptionalPath(value)
 }
