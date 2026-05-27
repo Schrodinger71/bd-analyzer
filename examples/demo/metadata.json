@@ -1,0 +1,47 @@
+{
+  "settings": {
+    "password_min_length": "12",
+    "auth_max_failed_attempts": "5"
+  },
+  "audit": {
+    "enabled": true,
+    "provider": "pgaudit",
+    "events": [
+      "ddl",
+      "role",
+      "write"
+    ],
+    "log_directory_protected": true,
+    "immutable_storage": false
+  },
+  "backup": {
+    "enabled": true,
+    "schedule": "daily",
+    "retention_days": 14,
+    "encrypted": true,
+    "tested_restore": true
+  },
+  "integrity": {
+    "config_control_enabled": true,
+    "checksums_enabled": true
+  },
+  "roles": [
+    {
+      "name": "postgres",
+      "login": true,
+      "superuser": true,
+      "inherit": true
+    },
+    {
+      "name": "app_readonly",
+      "login": true,
+      "inherit": true,
+      "member_of": [
+        "reporting"
+      ]
+    }
+  ],
+  "notes": [
+    "Демонстрационный профиль для проверки работоспособности проекта."
+  ]
+}
