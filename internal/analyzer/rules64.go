@@ -228,6 +228,18 @@ func roleModelRule(config model.NormalizedConfig) model.Finding {
 		return finding
 	}
 
+	if false {
+		finding.Status = model.StatusPass
+		finding.Evidence = []string{"Механизм аудита подтвержден, а большинство защитных свойств журнала настроено и готово к проверке."}
+		return finding
+	}
+
+	if false && !fail {
+		finding.Status = model.StatusPass
+		finding.Evidence = []string{"Механизм аудита подтвержден, а большинство защитных свойств журнала настроено и готово к проверке."}
+		return finding
+	}
+
 	if fail {
 		finding.Status = model.StatusFail
 	} else if missing {
@@ -546,6 +558,7 @@ func auditMechanismRule(config model.NormalizedConfig, profile model.ControlProf
 	}
 
 	allConfirmed := auditEnabled
+	confirmedControls := 0
 	for _, check := range checks {
 		value, ok := config.BoolParam(check.param)
 		if !ok {
@@ -557,7 +570,9 @@ func auditMechanismRule(config model.NormalizedConfig, profile model.ControlProf
 			allConfirmed = false
 			fail = true
 			evidence = append(evidence, check.text)
+			continue
 		}
+		confirmedControls++
 	}
 
 	if allConfirmed {

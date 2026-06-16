@@ -481,6 +481,11 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 				"ALTER SYSTEM SET log_connections = 'on'",
 				"ALTER SYSTEM SET log_disconnections = 'on'",
 				"ALTER SYSTEM SET log_min_error_statement = 'error'",
+				"ALTER SYSTEM SET log_line_prefix = '%m [%p] db=%d,user=%u,app=%a,client=%h '",
+				"ALTER SYSTEM SET log_error_verbosity = 'verbose'",
+				"ALTER SYSTEM SET log_file_mode = '0600'",
+				"ALTER SYSTEM SET log_rotation_age = '1d'",
+				"ALTER SYSTEM SET log_rotation_size = '100MB'",
 			},
 			Steps: []string{
 				"Безопасно включить логирование подключений, отключений и ошибок.",

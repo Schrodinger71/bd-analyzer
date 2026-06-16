@@ -146,6 +146,8 @@ type Role struct {
 	Name         string   `json:"name"`
 	Login        bool     `json:"login"`
 	Superuser    bool     `json:"superuser"`
+	CreateDB     bool     `json:"create_db"`
+	CreateRole   bool     `json:"create_role"`
 	Replication  bool     `json:"replication"`
 	BypassRLS    bool     `json:"bypass_rls"`
 	Inherit      bool     `json:"inherit"`

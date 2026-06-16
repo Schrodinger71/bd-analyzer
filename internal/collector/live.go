@@ -213,6 +213,8 @@ func collectRoles(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnapsho
 			r.rolname,
 			r.rolcanlogin,
 			r.rolsuper,
+			r.rolcreatedb,
+			r.rolcreaterole,
 			r.rolreplication,
 			r.rolbypassrls,
 			r.rolinherit,
@@ -220,7 +222,7 @@ func collectRoles(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnapsho
 		from pg_roles r
 		left join pg_auth_members am on am.member = r.oid
 		left join pg_roles m on m.oid = am.roleid
-		group by r.rolname, r.rolcanlogin, r.rolsuper, r.rolreplication, r.rolbypassrls, r.rolinherit
+		group by r.rolname, r.rolcanlogin, r.rolsuper, r.rolcreatedb, r.rolcreaterole, r.rolreplication, r.rolbypassrls, r.rolinherit
 		order by r.rolname
 	`)
 	if err != nil {
@@ -232,7 +234,17 @@ func collectRoles(ctx context.Context, db *sql.DB, snapshot *model.ConfigSnapsho
 	for rows.Next() {
 		var role model.Role
 		var memberships string
-		if err := rows.Scan(&role.Name, &role.Login, &role.Superuser, &role.Replication, &role.BypassRLS, &role.Inherit, &memberships); err != nil {
+		if err := rows.Scan(
+			&role.Name,
+			&role.Login,
+			&role.Superuser,
+			&role.CreateDB,
+			&role.CreateRole,
+			&role.Replication,
+			&role.BypassRLS,
+			&role.Inherit,
+			&memberships,
+		); err != nil {
 			snapshot.CollectionWarnings = append(snapshot.CollectionWarnings, formatLiveQueryError("ошибка чтения роли из pg_roles", err).Error())
 			return
 		}

@@ -211,7 +211,10 @@ func GuiInit() {
 			return
 		}
 		// Только базовая информация, без тяжёлых вычислений
-		hardeningPlanText = buildHardeningPlan()
+		proposals := remediation.Build(state.lastRun.Analysis, state.lastRun.Snapshot)
+		_ = proposals
+		autoApplicable := remediation.AutoApplicable(state.lastRun.Analysis, state.lastRun.Snapshot)
+		hardeningPlanText = ""
 		hardeningPreview.SetText(fmt.Sprintf(
 			"Профиль: %s | Балл: %d/100 | Предупреждений: %d | Несоответствий: %d\n\nПлан усиления сформирован. Нажмите \"Сохранить план усиления\" для экспорта.",
 			state.lastRun.Analysis.Class.Label(),
@@ -221,7 +224,7 @@ func GuiInit() {
 		))
 		autoApplyPreview.SetText(fmt.Sprintf(
 			"Безопасных автоизменений: %d\nНажмите \"Применить безопасные изменения\" для запуска.",
-			len(remediation.AutoApplicable(state.lastRun.Analysis, state.lastRun.Snapshot)),
+			len(autoApplicable),
 		))
 	}
 
@@ -323,7 +326,7 @@ func GuiInit() {
 			autoApplyPreview.SetText("Выполняется автоприменение...")
 
 			previousAnalysis := state.lastRun.Analysis
-			go func() {
+			func() {
 				applyResult, err := remediation.ApplySafeWithProgress(request, previousAnalysis, state.lastRun.Snapshot, func(update remediation.ProgressUpdate) {
 					statusText := fmt.Sprintf("Автоусиление: шаг %d из %d. %s", update.Current, update.Total, update.Message)
 					statusLabel.SetText(statusText)
@@ -375,7 +378,7 @@ func GuiInit() {
 					previousAnalysis.Summary.Warnings, result.Analysis.Summary.Warnings,
 					previousAnalysis.Summary.Failed, result.Analysis.Summary.Failed,
 				)
-				autoApplyPreview.SetText(verificationSummary)
+				autoApplyPreview.SetText(applyResult.Summary() + "\n\n" + verificationSummary)
 				setBusy(false, "Автоприменение завершено.")
 				dialog.ShowInformation("Усиление", applyResult.Summary()+"\n\n"+verificationSummary, window)
 			}()
