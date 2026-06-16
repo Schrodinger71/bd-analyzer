@@ -152,7 +152,7 @@ func modernGuiInit() {
 			return
 		}
 
-		data, err := state.runner.Export(state.lastRun.Analysis, format)
+		data, err := state.runner.ExportRun(*state.lastRun, format)
 		if err != nil {
 			dialog.ShowError(err, window)
 			return

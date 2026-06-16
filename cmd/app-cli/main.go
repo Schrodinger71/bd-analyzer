@@ -62,7 +62,7 @@ func main() {
 		exitErr(err)
 	}
 
-	data, err := svc.Export(result.Analysis, outputFormat)
+	data, err := svc.ExportRun(result, outputFormat)
 	if err != nil {
 		exitErr(err)
 	}

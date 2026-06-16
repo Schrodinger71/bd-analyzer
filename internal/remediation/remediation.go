@@ -33,17 +33,29 @@ type Proposal struct {
 }
 
 type AppliedChange struct {
-	Title      string
-	Statement  string
-	Applied    bool
-	Message    string
-	FindingID  string
-	FindingKey string
+	Title              string
+	Statement          string
+	Applied            bool
+	Message            string
+	FindingID          string
+	FindingKey         string
+	VerificationQuery  string
+	VerificationResult string
+	VerificationError  string
 }
 
 type ApplyResult struct {
 	Changes []AppliedChange
 }
+
+type ProgressUpdate struct {
+	Phase   string
+	Current int
+	Total   int
+	Message string
+}
+
+type ProgressFunc func(ProgressUpdate)
 
 func (r ApplyResult) HasFailures() bool {
 	for _, change := range r.Changes {
@@ -256,6 +268,126 @@ func ApplySafe(req collector.Request, result model.AnalysisResult, snapshot mode
 		out.Changes = append(out.Changes, change)
 	}
 
+	return out, nil
+}
+
+func ApplySafeWithProgress(req collector.Request, result model.AnalysisResult, snapshot model.ConfigSnapshot, progress ProgressFunc) (ApplyResult, error) {
+	if progress == nil {
+		return ApplySafe(req, result, snapshot)
+	}
+	if !req.UsesLiveConnection() {
+		return ApplyResult{}, fmt.Errorf("автоприменение доступно только для живой PostgreSQL")
+	}
+
+	proposals := AutoApplicable(result, snapshot)
+	if len(proposals) == 0 {
+		return ApplyResult{}, nil
+	}
+
+	totalSteps := countApplySteps(proposals)
+	currentStep := 0
+	emitProgress := func(phase, message string) {
+		progress(ProgressUpdate{
+			Phase:   phase,
+			Current: currentStep,
+			Total:   totalSteps,
+			Message: message,
+		})
+	}
+
+	currentStep++
+	emitProgress("connect", "Подключение к live PostgreSQL для автоусиления.")
+
+	db, err := sql.Open("pgx", buildDSN(req))
+	if err != nil {
+		return ApplyResult{}, fmt.Errorf("не удалось открыть соединение для автоприменения: %w", err)
+	}
+	defer db.Close()
+
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
+		return ApplyResult{}, fmt.Errorf("не удалось подключиться к PostgreSQL для автоприменения: %w", err)
+	}
+
+	var out ApplyResult
+	reloadNeeded := false
+	for _, proposal := range proposals {
+		for _, statement := range proposal.SQL {
+			currentStep++
+			emitProgress("apply", fmt.Sprintf("Применение: %s", proposal.Title))
+
+			change := AppliedChange{
+				Title:      proposal.Title,
+				Statement:  statement,
+				FindingID:  proposal.FindingID,
+				FindingKey: proposal.Key,
+			}
+
+			stmtCtx, stmtCancel := context.WithTimeout(ctx, 6*time.Second)
+			_, execErr := db.ExecContext(stmtCtx, statement)
+			stmtCancel()
+			if execErr != nil {
+				change.Message = execErr.Error()
+				out.Changes = append(out.Changes, change)
+				continue
+			}
+
+			change.Applied = true
+			change.Message = "изменение применено"
+			out.Changes = append(out.Changes, change)
+		}
+		if proposal.ReloadConfig {
+			reloadNeeded = true
+		}
+	}
+
+	if reloadNeeded {
+		currentStep++
+		emitProgress("reload", "Перечитка конфигурации PostgreSQL.")
+
+		change := AppliedChange{
+			Title:      "Перезагрузка конфигурации PostgreSQL",
+			Statement:  "SELECT pg_reload_conf()",
+			FindingKey: "reload-config",
+		}
+		reloadCtx, reloadCancel := context.WithTimeout(ctx, 6*time.Second)
+		_, reloadErr := db.ExecContext(reloadCtx, "SELECT pg_reload_conf()")
+		reloadCancel()
+		if reloadErr != nil {
+			change.Message = reloadErr.Error()
+		} else {
+			change.Applied = true
+			change.Message = "конфигурация перечитана"
+		}
+		out.Changes = append(out.Changes, change)
+	}
+
+	for i := range out.Changes {
+		query := verificationQueryForStatement(out.Changes[i].Statement)
+		if !out.Changes[i].Applied || query == "" {
+			continue
+		}
+
+		currentStep++
+		emitProgress("verify", fmt.Sprintf("Проверка: %s", out.Changes[i].Title))
+
+		out.Changes[i].VerificationQuery = query
+		verifyCtx, verifyCancel := context.WithTimeout(ctx, 6*time.Second)
+		value, verifyErr := readSingleValue(verifyCtx, db, query)
+		verifyCancel()
+		if verifyErr != nil {
+			out.Changes[i].VerificationError = verifyErr.Error()
+			continue
+		}
+		out.Changes[i].VerificationResult = value
+	}
+
+	emitProgress("done", "Автоусиление и первичная проверка завершены.")
 	return out, nil
 }
 
@@ -524,4 +656,57 @@ func buildDSN(req collector.Request) string {
 	}
 
 	return dsn.String()
+}
+
+func countApplySteps(proposals []Proposal) int {
+	total := 1
+	reloadNeeded := false
+
+	for _, proposal := range proposals {
+		total += len(proposal.SQL)
+		if proposal.ReloadConfig {
+			reloadNeeded = true
+		}
+		for _, statement := range proposal.SQL {
+			if verificationQueryForStatement(statement) != "" {
+				total++
+			}
+		}
+	}
+
+	if reloadNeeded {
+		total++
+	}
+
+	return total
+}
+
+func verificationQueryForStatement(statement string) string {
+	trimmed := strings.TrimSpace(strings.TrimSuffix(statement, ";"))
+	upper := strings.ToUpper(trimmed)
+	const prefix = "ALTER SYSTEM SET "
+	if !strings.HasPrefix(upper, prefix) {
+		return ""
+	}
+
+	remainder := strings.TrimSpace(trimmed[len(prefix):])
+	eqIndex := strings.Index(remainder, "=")
+	if eqIndex <= 0 {
+		return ""
+	}
+
+	parameter := strings.TrimSpace(remainder[:eqIndex])
+	if parameter == "" {
+		return ""
+	}
+
+	return "SHOW " + parameter
+}
+
+func readSingleValue(ctx context.Context, db *sql.DB, query string) (string, error) {
+	var value string
+	if err := db.QueryRowContext(ctx, query).Scan(&value); err != nil {
+		return "", err
+	}
+	return value, nil
 }

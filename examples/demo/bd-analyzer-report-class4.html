@@ -1,0 +1,1160 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Отчет BD Analyzer</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f3eee4;
+  --panel: rgba(255, 252, 245, 0.96);
+  --panel-strong: #fffdfa;
+  --text: #1f2933;
+  --muted: #5e6c84;
+  --border: #d8cfbe;
+  --pass: #2f7d4a;
+  --pass-bg: #edf8f0;
+  --warn: #a65c00;
+  --warn-bg: #fff3df;
+  --fail: #a33232;
+  --fail-bg: #fff0ef;
+  --accent: #214e7a;
+  --shadow: 0 18px 42px rgba(31, 41, 51, 0.09);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "Segoe UI", "DejaVu Sans", sans-serif;
+  color: var(--text);
+  background:
+    radial-gradient(circle at top left, rgba(33, 78, 122, 0.10), transparent 34%),
+    radial-gradient(circle at top right, rgba(47, 125, 74, 0.10), transparent 30%),
+    linear-gradient(135deg, #efe7d8 0%, #f8f5ee 48%, #e6efe8 100%);
+}
+.wrap {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px;
+}
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+}
+.hero {
+  padding: 28px;
+  margin-bottom: 20px;
+}
+.hero h1 {
+  margin: 0 0 10px;
+  font-size: 34px;
+}
+.hero p {
+  margin: 6px 0;
+  color: var(--muted);
+}
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+  margin-top: 22px;
+}
+.metric {
+  padding: 16px;
+  background: var(--panel-strong);
+  border-radius: 16px;
+  border: 1px solid #e4dccf;
+}
+.metric .label {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.metric .value {
+  margin-top: 8px;
+  font-size: 28px;
+  font-weight: 700;
+}
+.status-pass, .badge-pass { color: var(--pass); }
+.status-warn, .badge-warn { color: var(--warn); }
+.status-fail, .badge-fail { color: var(--fail); }
+.section {
+  padding: 22px;
+  margin-bottom: 18px;
+}
+.section h2 {
+  margin: 0 0 14px;
+  font-size: 22px;
+}
+.section h3 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+.kv-list {
+  display: grid;
+  gap: 10px;
+}
+.kv {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid #e6ddcf;
+  background: var(--panel-strong);
+}
+.kv strong {
+  display: block;
+  margin-bottom: 4px;
+}
+.findings-group {
+  margin-top: 18px;
+}
+.findings-group + .findings-group {
+  margin-top: 22px;
+}
+.finding {
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--panel-strong);
+  margin-bottom: 14px;
+}
+.finding.pass { background: var(--pass-bg); }
+.finding.warn { background: var(--warn-bg); }
+.finding.fail { background: var(--fail-bg); }
+.finding-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.finding-header h4 {
+  margin: 0;
+  font-size: 19px;
+}
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.badge {
+  display: inline-flex;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  background: rgba(255,255,255,0.72);
+  border: 1px solid rgba(31,41,51,0.10);
+}
+.finding p {
+  margin: 8px 0;
+}
+.finding ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+.finding li {
+  margin-bottom: 6px;
+}
+.proposal {
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid #dfd6c7;
+  background: var(--panel-strong);
+  margin-bottom: 14px;
+}
+.proposal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.proposal-header h4 {
+  margin: 0;
+  font-size: 18px;
+}
+.snippet {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 14px;
+  background: #f2efe8;
+  border: 1px solid #ded6c8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 13px;
+}
+.empty {
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--panel-strong);
+  border: 1px dashed #d9cfbf;
+  color: var(--muted);
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="panel hero">
+    <h1>Анализ защищенности конфигурации СУБД</h1>
+    <p>Цель анализа: PostgreSQL target</p>
+    <p>Профиль контроля: 4 класс</p>
+    <p>Время формирования: 2026-06-16 17:18:21</p>
+    <p>Live-БД: localhost:5432/postgres (postgres)</p>
+    <div class="metrics">
+      
+      <div class="metric">
+        <div class="label">Итоговый балл</div>
+        <div class="value ">42/100</div>
+      </div>
+      
+      <div class="metric">
+        <div class="label">Успешно</div>
+        <div class="value status-pass">0</div>
+      </div>
+      
+      <div class="metric">
+        <div class="label">Предупреждения</div>
+        <div class="value status-warn">14</div>
+      </div>
+      
+      <div class="metric">
+        <div class="label">Несоответствия</div>
+        <div class="value status-fail">2</div>
+      </div>
+      
+      <div class="metric">
+        <div class="label">Рекомендации</div>
+        <div class="value ">15</div>
+      </div>
+      
+      <div class="metric">
+        <div class="label">Автоизменения</div>
+        <div class="value status-pass">2</div>
+      </div>
+      
+    </div>
+  </section>
+
+  <section class="panel section">
+    <h2>Источники и контекст</h2>
+    <div class="info-grid">
+      <div>
+        <h3>Источники данных</h3>
+        
+        <div class="kv-list">
+          
+          <div class="kv">
+            <strong>postgresql.conf</strong>
+            <span>/var/lib/postgresql/data/postgresql.conf</span>
+          </div>
+          
+          <div class="kv">
+            <strong>pg_hba.conf</strong>
+            <span>/var/lib/postgresql/data/pg_hba.conf</span>
+          </div>
+          
+          <div class="kv">
+            <strong>pg_ident.conf</strong>
+            <span>/var/lib/postgresql/data/pg_ident.conf</span>
+          </div>
+          
+        </div>
+        
+      </div>
+      <div>
+        <h3>Предупреждения и заметки</h3>
+        
+        <div class="empty">Дополнительных предупреждений и заметок нет.</div>
+        
+      </div>
+    </div>
+  </section>
+
+  <section class="panel section">
+    <h2>Статус по проверкам</h2>
+
+    <div class="findings-group">
+      <h3 class="status-fail">Красные несоответствия</h3>
+      
+        
+        <article class="finding fail">
+          <div class="finding-header">
+            <h4>Контроль целостности при запуске</h4>
+            <div class="badges">
+              <span class="badge badge-fail">несоответствие</span>
+              <span class="badge badge-fail">критический</span>
+              <span class="badge">INT-001</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Контроль целостности</p>
+          <p><strong>Требование:</strong> Пункт 9.1 приказа №64 требует контроля целостности конфигурации и процедур, уведомления администраторов и блокирования доступа пользователей при нарушении целостности.</p>
+          <p><strong>Риск:</strong> Отсутствие контроля целостности позволяет скрытно модифицировать конфигурацию и программный код СУБД.</p>
+          <p><strong>Рекомендация:</strong> Подтвердите настройки snapshot.Integrity и параметры integrity_alert_dbms_admin, integrity_alert_db_admin, integrity_block_system_users, integrity_block_db_users.</p>
+          
+          <ul>
+            
+            <li>Не подтвержден контроль целостности конфигурации СУБД и баз данных при запуске.</li>
+            
+            <li>Не подтверждено уведомление администратора СУБД о нарушении целостности. Ожидается параметр integrity_alert_dbms_admin.</li>
+            
+            <li>Не подтверждено уведомление администратора базы данных о нарушении целостности. Ожидается параметр integrity_alert_db_admin.</li>
+            
+            <li>Не подтверждено блокирование доступа пользователей СУБД при нарушении целостности. Ожидается параметр integrity_block_system_users.</li>
+            
+            <li>Не подтверждено блокирование доступа пользователей базы данных при нарушении целостности. Ожидается параметр integrity_block_db_users.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding fail">
+          <div class="finding-header">
+            <h4>Резервное копирование и восстановление</h4>
+            <div class="badges">
+              <span class="badge badge-fail">несоответствие</span>
+              <span class="badge badge-fail">критический</span>
+              <span class="badge">BACKUP-001</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Резервное копирование</p>
+          <p><strong>Требование:</strong> Пункты 11.1-11.2 приказа №64 требуют резервного копирования и восстановления баз данных и конфигураций, а для 4 класса - дополнительно конфигурации самой СУБД.</p>
+          <p><strong>Риск:</strong> Отсутствие резервных копий и проверенного восстановления не позволяет обеспечить восстановление после инцидента или сбоя.</p>
+          <p><strong>Рекомендация:</strong> Подтвердите backup settings и при необходимости параметр backup_config_included.</p>
+          
+          <ul>
+            
+            <li>Резервное копирование баз данных не подтверждено.</li>
+            
+            <li>Для 4 класса не подтверждено резервное копирование конфигурации СУБД: отсутствует backup_config_included.</li>
+            
+          </ul>
+          
+        </article>
+        
+      
+    </div>
+
+    <div class="findings-group">
+      <h3 class="status-warn">Желтые предупреждения</h3>
+      
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Уровень доверия СУБД</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">высокий</span>
+              <span class="badge">TRUST-001</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Уровень доверия</p>
+          <p><strong>Требование:</strong> Пункт 5 приказа №64 требует соответствия класса защиты СУБД установленному уровню доверия.</p>
+          <p><strong>Риск:</strong> Недостаточный уровень доверия означает несоответствие нормативным требованиям к сертифицированной СУБД.</p>
+          <p><strong>Рекомендация:</strong> Подтвердите уровень доверия сертификационными документами и укажите его в metadata JSON через параметр dbms_trust_level.</p>
+          
+          <ul>
+            
+            <li>Не удалось подтвердить уровень доверия СУБД по доступным данным. Ожидается параметр dbms_trust_level.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Сертифицированная операционная система</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">критический</span>
+              <span class="badge">OS-001</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Операционная система</p>
+          <p><strong>Требование:</strong> Пункт 6 приказа №64 требует функционирования СУБД в сертифицированной операционной системе с классом защиты не ниже класса защиты СУБД.</p>
+          <p><strong>Риск:</strong> Использование неподтвержденной ОС или ОС с более низким классом защиты нарушает обязательные требования приказа.</p>
+          <p><strong>Рекомендация:</strong> Подтвердите сертификацию ОС и задайте в metadata JSON параметры os_certified и os_protection_class.</p>
+          
+          <ul>
+            
+            <li>Нет подтверждения сертификации ОС: отсутствует параметр os_certified.</li>
+            
+            <li>Нет подтверждения класса защиты ОС: отсутствует параметр os_protection_class.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Дискреционный и ролевой доступ</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">критический</span>
+              <span class="badge">ACCESS-001</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Управление доступом</p>
+          <p><strong>Требование:</strong> Пункт 7.1 приказа №64 требует реализации дискреционного и ролевого методов управления доступом.</p>
+          <p><strong>Риск:</strong> Отсутствие DAC или RBAC делает разграничение доступа неполным и затрудняет исполнение ролевой модели безопасности.</p>
+          <p><strong>Рекомендация:</strong> Подтвердите реализацию DAC/RBAC параметрами access_dac_enabled и access_rbac_enabled.</p>
+          
+          <ul>
+            
+            <li>Не подтверждена реализация дискреционного доступа: отсутствует access_dac_enabled.</li>
+            
+            <li>Не подтверждена реализация ролевого доступа: отсутствует access_rbac_enabled.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Ролевая модель администрирования</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">высокий</span>
+              <span class="badge">ACCESS-002</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Управление доступом</p>
+          <p><strong>Требование:</strong> Пункт 7.1 приказа №64 требует наличия ролей администратора СУБД, администратора базы данных и пользователя базы данных с соответствующими полномочиями.</p>
+          <p><strong>Риск:</strong> Неполная ролевая модель приводит к смешению обязанностей и избыточным привилегиям.</p>
+          <p><strong>Рекомендация:</strong> Подтвердите состав ролей и полноту их прав параметрами role_dbms_admin_present, role_db_admin_present, role_db_user_present, dbms_admin_rights_complete, db_admin_rights_complete и db_user_rights_complete.</p>
+          
+          <ul>
+            
+            <li>Нет подтверждения для роль администратора СУБД: отсутствует параметр role_dbms_admin_present.</li>
+            
+            <li>Нет подтверждения для роль администратора базы данных: отсутствует параметр role_db_admin_present.</li>
+            
+            <li>Нет подтверждения для роль пользователя базы данных: отсутствует параметр role_db_user_present.</li>
+            
+            <li>Нет подтверждения для полномочия администратора СУБД: отсутствует параметр dbms_admin_rights_complete.</li>
+            
+            <li>Нет подтверждения для полномочия администратора базы данных: отсутствует параметр db_admin_rights_complete.</li>
+            
+            <li>Нет подтверждения для полномочия пользователя базы данных: отсутствует параметр db_user_rights_complete.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Матрицы доступа к объектам и процедурам</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">высокий</span>
+              <span class="badge">ACCESS-003</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Управление доступом</p>
+          <p><strong>Требование:</strong> Пункт 7.1 приказа №64 требует настраиваемых списков управления доступом к объектам и процедурам базы данных.</p>
+          <p><strong>Риск:</strong> Если система не поддерживает ACL для процедур и объектов, разграничение доступа не соответствует нормативным требованиям.</p>
+          <p><strong>Рекомендация:</strong> Подтвердите поддержку матриц доступа параметрами procedure_acl_supported и object_acl_supported.</p>
+          
+          <ul>
+            
+            <li>Не подтверждена поддержка ACL для процедур: отсутствует procedure_acl_supported.</li>
+            
+            <li>Не подтверждена поддержка ACL для объектов доступа: отсутствует object_acl_supported.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Парольная политика и лимит попыток входа</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">критический</span>
+              <span class="badge">AUTH-001</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Аутентификация</p>
+          <p><strong>Требование:</strong> Пункты 8.1-8.3 приказа №64 задают минимальную длину пароля, минимальный размер алфавита и максимальное число неуспешных попыток аутентификации.</p>
+          <p><strong>Риск:</strong> Слабая парольная политика и завышенный порог попыток входа увеличивают риск подбора учетных данных.</p>
+          <p><strong>Рекомендация:</strong> Укажите в metadata JSON параметры password_min_length, password_alphabet_size и auth_max_failed_attempts в соответствии с выбранным классом защиты.</p>
+          
+          <ul>
+            
+            <li>Не удалось подтвердить минимальную длину пароля: отсутствует password_min_length.</li>
+            
+            <li>Не удалось подтвердить размер алфавита пароля: отсутствует password_alphabet_size.</li>
+            
+            <li>Не удалось подтвердить лимит неуспешных попыток входа: отсутствует auth_max_failed_attempts.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Жизненный цикл аутентификации</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">высокий</span>
+              <span class="badge">AUTH-002</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Аутентификация</p>
+          <p><strong>Требование:</strong> Пункт 8.1 приказа №64 требует смены первичного пароля, блокировки учетной записи после исчерпания попыток входа, маскирования пароля и защищенного хранения аутентификационной информации.</p>
+          <p><strong>Риск:</strong> Нарушение этих требований упрощает компрометацию учетных записей и эксплуатацию первичных паролей.</p>
+          <p><strong>Рекомендация:</strong> Подтвердите параметры password_change_on_first_login, auth_lockout_enabled, auth_unlock_supported, password_input_masking и auth_storage_protected.</p>
+          
+          <ul>
+            
+            <li>Нет подтверждения смены пароля после первичной аутентификации.</li>
+            
+            <li>Нет подтверждения механизма блокировки после неуспешных попыток.</li>
+            
+            <li>Нет подтверждения механизма разблокировки учетной записи.</li>
+            
+            <li>Нет подтверждения маскирования пароля при вводе.</li>
+            
+            <li>Защищенное хранение частично подтверждено параметром password_encryption = scram-sha-256.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Периодический контроль целостности в работе</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">высокий</span>
+              <span class="badge">INT-002</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Контроль целостности</p>
+          <p><strong>Требование:</strong> Пункт 9.2 приказа №64 требует для 4 класса защиты контроля целостности процедур в процессе функционирования не реже одного раза в сутки.</p>
+          <p><strong>Риск:</strong> Отсутствие регулярной проверки целостности уменьшает вероятность своевременного выявления модификации кода.</p>
+          <p><strong>Рекомендация:</strong> Для 4 класса задайте параметр integrity_runtime_daily = true.</p>
+          
+          <ul>
+            
+            <li>Не удалось подтвердить суточный контроль целостности в процессе функционирования: отсутствует integrity_runtime_daily.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Механизмы регистрации событий безопасности</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">критический</span>
+              <span class="badge">AUD-001</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Регистрация событий безопасности</p>
+          <p><strong>Требование:</strong> Пункт 10.1 приказа №64 требует регистрации событий безопасности, оповещения администраторов, структурированного журнала, ограничения доступа к журналу и архивирования при заполнении.</p>
+          <p><strong>Риск:</strong> Без надежного журнала событий безопасность СУБД становится плохо контролируемой и усложняется расследование инцидентов.</p>
+          <p><strong>Рекомендация:</strong> Подтвердите audit subsystem и параметры security_event_alerting, security_log_structured, security_log_read_restricted, security_log_archive_on_full.</p>
+          
+          <ul>
+            
+            <li>Не удалось подтвердить наличие подсистемы регистрации событий безопасности.</li>
+            
+            <li>Не подтверждено оповещение администраторов о событиях безопасности. Ожидается параметр security_event_alerting.</li>
+            
+            <li>Не подтвержден структурированный формат журнала событий безопасности. Ожидается параметр security_log_structured.</li>
+            
+            <li>Не подтверждено ограничение доступа к журналу событий безопасности. Ожидается параметр security_log_read_restricted.</li>
+            
+            <li>Не подтверждено архивирование журнала при исчерпании выделенной области памяти. Ожидается параметр security_log_archive_on_full.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Полнота состава и реквизитов журнала событий</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">высокий</span>
+              <span class="badge">AUD-002</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Регистрация событий безопасности</p>
+          <p><strong>Требование:</strong> Пункты 10.1-10.2 приказа №64 требуют регистрации минимального набора событий, уникального идентификатора, даты, времени, типа события и для 4 класса - сведений о важности события.</p>
+          <p><strong>Риск:</strong> Неполный состав журнала не позволяет достоверно фиксировать и интерпретировать события безопасности.</p>
+          <p><strong>Рекомендация:</strong> Подтвердите параметры security_events_minimum_set, security_log_has_event_id, security_log_has_timestamp, security_log_has_event_type и для 4 класса security_event_importance.</p>
+          
+          <ul>
+            
+            <li>Не подтверждена регистрация минимального обязательного набора событий безопасности. Ожидается параметр security_events_minimum_set.</li>
+            
+            <li>Не подтверждена регистрация уникального идентификатора события. Ожидается параметр security_log_has_event_id.</li>
+            
+            <li>Не подтверждена регистрация даты и времени события. Ожидается параметр security_log_has_timestamp.</li>
+            
+            <li>Не подтверждена регистрация типа события безопасности. Ожидается параметр security_log_has_event_type.</li>
+            
+            <li>Не подтверждена регистрация важности события для 4 класса защиты: отсутствует security_event_importance.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Отказоустойчивость и доступность</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">высокий</span>
+              <span class="badge">AVAIL-001</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Доступность</p>
+          <p><strong>Требование:</strong> Пункт 12 приказа №64 требует для 4 класса отказоустойчивый кластер, синхронизацию конфигурации, поочередное обновление и откат без остановки кластера.</p>
+          <p><strong>Риск:</strong> Недостаточная отказоустойчивость нарушает требования по доступности и затрудняет безопасное обновление СУБД.</p>
+          <p><strong>Рекомендация:</strong> Для 4 класса подтвердите cluster_enabled, cluster_config_sync, rolling_update_supported и rollback_without_downtime.</p>
+          
+          <ul>
+            
+            <li>Отказоустойчивый кластер для СУБД не подтвержден. Ожидается параметр cluster_enabled.</li>
+            
+            <li>Не подтверждена синхронизация параметров конфигурации в кластере. Ожидается параметр cluster_config_sync.</li>
+            
+            <li>Не подтверждена возможность поочередного обновления узлов без потери доступности. Ожидается параметр rolling_update_supported.</li>
+            
+            <li>Не подтверждена возможность отката обновления без прерывания работы кластера. Ожидается параметр rollback_without_downtime.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Очистка памяти и безопасное удаление</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">высокий</span>
+              <span class="badge">MEM-001</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Очистка памяти</p>
+          <p><strong>Требование:</strong> Пункты 13.1-13.2 приказа №64 требуют многократной перезаписи при удалении баз данных и журналов, а для 4 класса - также удаления объектов базы данных с перезаписью.</p>
+          <p><strong>Риск:</strong> Небезопасное удаление оставляет остаточные данные, доступные для восстановления.</p>
+          <p><strong>Рекомендация:</strong> Подтвердите параметры memory_wipe_db_and_logs и для 4 класса memory_wipe_db_objects.</p>
+          
+          <ul>
+            
+            <li>Не подтверждено безопасное удаление баз данных и журналов: отсутствует memory_wipe_db_and_logs.</li>
+            
+            <li>Для 4 класса не подтверждено безопасное удаление объектов базы данных: отсутствует memory_wipe_db_objects.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Документирование параметров производительности</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">средний</span>
+              <span class="badge">PERF-001</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Производительность</p>
+          <p><strong>Требование:</strong> Пункт 14 приказа №64 требует документирования показателей производительности и зависимости этих значений от параметров настройки и условий функционирования.</p>
+          <p><strong>Риск:</strong> Отсутствие подтвержденных параметров производительности затрудняет оценку пригодности СУБД и соответствие формуляру.</p>
+          <p><strong>Рекомендация:</strong> Подтвердите документирование параметров performance_sessions_documented, performance_queries_documented, performance_transactions_documented, performance_latency_documented, performance_lb_instances_documented.</p>
+          
+          <ul>
+            
+            <li>Не подтверждено документирование числа параллельных пользовательских сессий. Ожидается параметр performance_sessions_documented.</li>
+            
+            <li>Не подтверждено документирование количества стандартных запросов в единицу времени. Ожидается параметр performance_queries_documented.</li>
+            
+            <li>Не подтверждено документирование количества транзакций в единицу времени. Ожидается параметр performance_transactions_documented.</li>
+            
+            <li>Не подтверждено документирование задержки выполнения стандартного запроса. Ожидается параметр performance_latency_documented.</li>
+            
+            <li>Не подтверждено документирование числа экземпляров для балансировки нагрузки. Ожидается параметр performance_lb_instances_documented.</li>
+            
+          </ul>
+          
+        </article>
+        
+        <article class="finding warn">
+          <div class="finding-header">
+            <h4>Ограничение программной среды</h4>
+            <div class="badges">
+              <span class="badge badge-warn">предупреждение</span>
+              <span class="badge badge-warn">критический</span>
+              <span class="badge">ENV-001</span>
+            </div>
+          </div>
+          <p><strong>Категория:</strong> Ограничение программной среды</p>
+          <p><strong>Требование:</strong> Пункты 15.1-15.2 приказа №64 требуют выявления и блокирования неразрешенного программного обеспечения, а для 4 класса - дополнительных ограничений на код и память.</p>
+          <p><strong>Риск:</strong> Отсутствие контроля программной среды повышает риск загрузки неразрешенного или модифицированного кода в адресное пространство СУБД.</p>
+          <p><strong>Рекомендация:</strong> Подтвердите параметры allowlist_enabled, block_untrusted_code_load и для 4 класса db_user_create_procedures_restricted, memory_wx_exclusive, block_modified_code_load.</p>
+          
+          <ul>
+            
+            <li>Не подтвержден перечень разрешенного ПО. Ожидается параметр allowlist_enabled.</li>
+            
+            <li>Не подтверждено блокирование загрузки ПО, не включенного в разрешенный перечень. Ожидается параметр block_untrusted_code_load.</li>
+            
+            <li>Не подтвержден запрет пользователям базы данных создавать хранимые процедуры. Ожидается параметр db_user_create_procedures_restricted.</li>
+            
+            <li>Не подтверждено размещение кода СУБД в памяти, не доступной одновременно для записи и исполнения. Ожидается параметр memory_wx_exclusive.</li>
+            
+            <li>Не подтверждено блокирование загрузки ПО с нарушенной целостностью. Ожидается параметр block_modified_code_load.</li>
+            
+          </ul>
+          
+        </article>
+        
+      
+    </div>
+
+    <div class="findings-group">
+      <h3 class="status-pass">Зеленые совпадения</h3>
+      
+      <div class="empty">Зеленые совпадения не были зафиксированы.</div>
+      
+    </div>
+  </section>
+
+  <section class="panel section">
+    <h2>План усиления по рекомендациям ФСТЭК</h2>
+    <p>Автоприменимых безопасных изменений: <strong>2</strong></p>
+    
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Устранить выявленное несоответствие: Сертифицированная операционная система</h4>
+          <div class="badges">
+            <span class="badge">Критический</span>
+            <span class="badge">Ручная проработка</span>
+            <span class="badge">вручную</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> Операционная система</p>
+        <p><strong>Основание:</strong> Сертифицированная операционная система (OS-001)</p>
+        <p><strong>Почему:</strong> Подтвердите сертификацию ОС и задайте в metadata JSON параметры os_certified и os_protection_class.</p>
+        
+        <ul>
+          
+          <li>Сопоставить рекомендацию анализа с текущим регламентом.</li>
+          
+          <li>Подготовить изменение конфигурации, SQL или эксплуатационной процедуры.</li>
+          
+          <li>Повторно запустить анализ живой БД после внесения изменений.</li>
+          
+        </ul>
+        
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Сузить правила клиентского доступа и исключить небезопасные методы</h4>
+          <div class="badges">
+            <span class="badge">Критический</span>
+            <span class="badge">pg_hba.conf</span>
+            <span class="badge">вручную</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> /var/lib/postgresql/data/pg_hba.conf</p>
+        <p><strong>Основание:</strong> Дискреционный и ролевой доступ (ACCESS-001)</p>
+        <p><strong>Почему:</strong> Подтвердите реализацию DAC/RBAC параметрами access_dac_enabled и access_rbac_enabled.</p>
+        
+        <ul>
+          
+          <li>Убрать trust/password для сетевых подключений.</li>
+          
+          <li>Ограничить подсети конкретными адресами или сегментами администраторов и приложений.</li>
+          
+          <li>Перевести сетевые правила на hostssl &#43; scram-sha-256.</li>
+          
+        </ul>
+        
+        
+        <div class="snippet">hostssl all all 127.0.0.1/32 scram-sha-256
+hostssl all all ::1/128 scram-sha-256
+# заменить широкие и trust-правила на адресно ограниченные</div>
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Усилить политику хранения паролей</h4>
+          <div class="badges">
+            <span class="badge">Критический</span>
+            <span class="badge">Live SQL &#43; парольная ротация</span>
+            <span class="badge badge-pass">авто</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> PostgreSQL cluster</p>
+        <p><strong>Основание:</strong> Парольная политика и лимит попыток входа (AUTH-001)</p>
+        <p><strong>Почему:</strong> Укажите в metadata JSON параметры password_min_length, password_alphabet_size и auth_max_failed_attempts в соответствии с выбранным классом защиты.</p>
+        
+        <ul>
+          
+          <li>Включить SCRAM для новых паролей.</li>
+          
+          <li>После автоприменения вручную перезадать пароли критичных учетных записей.</li>
+          
+          <li>Задокументировать требования по длине и алфавиту паролей в metadata/регламенте.</li>
+          
+        </ul>
+        
+        
+        <div class="snippet">ALTER SYSTEM SET password_encryption = &#39;scram-sha-256&#39;;
+SELECT pg_reload_conf();
+-- Далее вручную выполнить ALTER ROLE &lt;role&gt; WITH PASSWORD &#39;&lt;new-strong-password&gt;&#39;;</div>
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Подтвердить контроль целостности конфигурации и данных</h4>
+          <div class="badges">
+            <span class="badge">Критический</span>
+            <span class="badge">Оргмеры &#43; конфигурация кластера</span>
+            <span class="badge">вручную</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> Конфигурация PostgreSQL и файловая система</p>
+        <p><strong>Основание:</strong> Контроль целостности при запуске (INT-001)</p>
+        <p><strong>Почему:</strong> Подтвердите настройки snapshot.Integrity и параметры integrity_alert_dbms_admin, integrity_alert_db_admin, integrity_block_system_users, integrity_block_db_users.</p>
+        
+        <ul>
+          
+          <li>Внедрить контроль целостности конфигурационных файлов.</li>
+          
+          <li>Проверить возможность включения data checksums для новых инсталляций или при переинициализации кластера.</li>
+          
+          <li>Задокументировать процедуру контроля изменений конфигурации.</li>
+          
+        </ul>
+        
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Усилить журналирование событий безопасности</h4>
+          <div class="badges">
+            <span class="badge">Критический</span>
+            <span class="badge">ALTER SYSTEM &#43; pg_reload_conf()</span>
+            <span class="badge badge-pass">авто</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> /var/lib/postgresql/data/postgresql.conf</p>
+        <p><strong>Основание:</strong> Механизмы регистрации событий безопасности (AUD-001)</p>
+        <p><strong>Почему:</strong> Подтвердите audit subsystem и параметры security_event_alerting, security_log_structured, security_log_read_restricted, security_log_archive_on_full.</p>
+        
+        <ul>
+          
+          <li>Безопасно включить логирование подключений, отключений и ошибок.</li>
+          
+          <li>Отдельно оценить возможность включения pgAudit, если расширение установлено и рестарт допустим.</li>
+          
+          <li>Проверить защищённость каталога журналов и порядок архивации.</li>
+          
+        </ul>
+        
+        
+        <div class="snippet">ALTER SYSTEM SET log_connections = &#39;on&#39;;
+ALTER SYSTEM SET log_disconnections = &#39;on&#39;;
+ALTER SYSTEM SET log_min_error_statement = &#39;error&#39;;
+SELECT pg_reload_conf();
+-- Включение pgAudit оставить как отдельное подтвержденное изменение.</div>
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Закрыть требования по резервному копированию и восстановлению</h4>
+          <div class="badges">
+            <span class="badge">Критический</span>
+            <span class="badge">Оргмеры &#43; backup pipeline</span>
+            <span class="badge">вручную</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> Контур резервного копирования</p>
+        <p><strong>Основание:</strong> Резервное копирование и восстановление (BACKUP-001)</p>
+        <p><strong>Почему:</strong> Подтвердите backup settings и при необходимости параметр backup_config_included.</p>
+        
+        <ul>
+          
+          <li>Настроить регулярный backup базы и конфигурации СУБД.</li>
+          
+          <li>Определить срок хранения и шифрование резервных копий.</li>
+          
+          <li>Провести и задокументировать тестовое восстановление.</li>
+          
+        </ul>
+        
+        
+        <div class="snippet">pg_dump -Fc -d &lt;db_name&gt; -f &lt;backup_file&gt;
+# или настроить base backup / WAL archive по принятой схеме</div>
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Ограничить программную среду и загрузку недоверенного кода</h4>
+          <div class="badges">
+            <span class="badge">Критический</span>
+            <span class="badge">Оргмеры &#43; hardening ОС/расширений</span>
+            <span class="badge">вручную</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> Host OS / extension policy</p>
+        <p><strong>Основание:</strong> Ограничение программной среды (ENV-001)</p>
+        <p><strong>Почему:</strong> Подтвердите параметры allowlist_enabled, block_untrusted_code_load и для 4 класса db_user_create_procedures_restricted, memory_wx_exclusive, block_modified_code_load.</p>
+        
+        <ul>
+          
+          <li>Утвердить allowlist для расширений и вспомогательного ПО.</li>
+          
+          <li>Ограничить установку сторонних библиотек и процедур пользователями БД.</li>
+          
+          <li>Контролировать целостность бинарных файлов и shared libraries.</li>
+          
+        </ul>
+        
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Устранить выявленное несоответствие: Уровень доверия СУБД</h4>
+          <div class="badges">
+            <span class="badge">Высокий</span>
+            <span class="badge">Ручная проработка</span>
+            <span class="badge">вручную</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> Уровень доверия</p>
+        <p><strong>Основание:</strong> Уровень доверия СУБД (TRUST-001)</p>
+        <p><strong>Почему:</strong> Подтвердите уровень доверия сертификационными документами и укажите его в metadata JSON через параметр dbms_trust_level.</p>
+        
+        <ul>
+          
+          <li>Сопоставить рекомендацию анализа с текущим регламентом.</li>
+          
+          <li>Подготовить изменение конфигурации, SQL или эксплуатационной процедуры.</li>
+          
+          <li>Повторно запустить анализ живой БД после внесения изменений.</li>
+          
+        </ul>
+        
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Пересобрать ролевую модель и сократить избыточные полномочия</h4>
+          <div class="badges">
+            <span class="badge">Высокий</span>
+            <span class="badge">Live SQL &#43; ревизия ролей</span>
+            <span class="badge">вручную</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> Роли и привилегии PostgreSQL</p>
+        <p><strong>Основание:</strong> Ролевая модель администрирования (ACCESS-002)</p>
+        <p><strong>Почему:</strong> Подтвердите состав ролей и полноту их прав параметрами role_dbms_admin_present, role_db_admin_present, role_db_user_present, dbms_admin_rights_complete, db_admin_rights_complete и db_user_rights_complete.</p>
+        
+        <ul>
+          
+          <li>Выделить отдельные роли администратора СУБД, администратора БД и прикладного пользователя.</li>
+          
+          <li>Сократить число SUPERUSER-ролей до минимально необходимого набора.</li>
+          
+          <li>Проверить права роли public и избыточные атрибуты REPLICATION/BYPASSRLS.</li>
+          
+        </ul>
+        
+        
+        <div class="snippet">REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON DATABASE &lt;db_name&gt; FROM PUBLIC;
+ALTER ROLE &lt;role&gt; NOSUPERUSER NOBYPASSRLS NOREPLICATION;</div>
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Формализовать матрицы доступа к объектам и процедурам</h4>
+          <div class="badges">
+            <span class="badge">Высокий</span>
+            <span class="badge">Live SQL &#43; модель прав</span>
+            <span class="badge">вручную</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> ACL объектов и процедур</p>
+        <p><strong>Основание:</strong> Матрицы доступа к объектам и процедурам (ACCESS-003)</p>
+        <p><strong>Почему:</strong> Подтвердите поддержку матриц доступа параметрами procedure_acl_supported и object_acl_supported.</p>
+        
+        <ul>
+          
+          <li>Определить ролевую матрицу GRANT/REVOKE по схемам, таблицам и функциям.</li>
+          
+          <li>Запретить blanket-доступ для PUBLIC.</li>
+          
+          <li>Закрепить минимально необходимые ACL в migration-скриптах.</li>
+          
+        </ul>
+        
+        
+        <div class="snippet">REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO &lt;app_role&gt;;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO &lt;app_role&gt;;</div>
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Закрыть пробелы жизненного цикла аутентификации</h4>
+          <div class="badges">
+            <span class="badge">Высокий</span>
+            <span class="badge">Оргмеры &#43; внешняя интеграция</span>
+            <span class="badge">вручную</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> Политика доступа и PAM/SSO</p>
+        <p><strong>Основание:</strong> Жизненный цикл аутентификации (AUTH-002)</p>
+        <p><strong>Почему:</strong> Подтвердите параметры password_change_on_first_login, auth_lockout_enabled, auth_unlock_supported, password_input_masking и auth_storage_protected.</p>
+        
+        <ul>
+          
+          <li>Ввести смену первичного пароля при выдаче доступа.</li>
+          
+          <li>Настроить блокировку после серии неуспешных входов через внешний контур аутентификации.</li>
+          
+          <li>Подтвердить masking/lockout/unlock в эксплуатационной документации.</li>
+          
+        </ul>
+        
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Устранить выявленное несоответствие: Периодический контроль целостности в работе</h4>
+          <div class="badges">
+            <span class="badge">Высокий</span>
+            <span class="badge">Ручная проработка</span>
+            <span class="badge">вручную</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> Контроль целостности</p>
+        <p><strong>Основание:</strong> Периодический контроль целостности в работе (INT-002)</p>
+        <p><strong>Почему:</strong> Для 4 класса задайте параметр integrity_runtime_daily = true.</p>
+        
+        <ul>
+          
+          <li>Сопоставить рекомендацию анализа с текущим регламентом.</li>
+          
+          <li>Подготовить изменение конфигурации, SQL или эксплуатационной процедуры.</li>
+          
+          <li>Повторно запустить анализ живой БД после внесения изменений.</li>
+          
+        </ul>
+        
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Подтвердить или внедрить отказоустойчивую схему для требуемого класса</h4>
+          <div class="badges">
+            <span class="badge">Высокий</span>
+            <span class="badge">Архитектурное изменение</span>
+            <span class="badge">вручную</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> Кластер/репликация/обновление</p>
+        <p><strong>Основание:</strong> Отказоустойчивость и доступность (AVAIL-001)</p>
+        <p><strong>Почему:</strong> Для 4 класса подтвердите cluster_enabled, cluster_config_sync, rolling_update_supported и rollback_without_downtime.</p>
+        
+        <ul>
+          
+          <li>Определить целевую HA-схему: primary-standby, Patroni, etcd/Consul или другой утверждённый контур.</li>
+          
+          <li>Задокументировать rolling update и rollback без простоя.</li>
+          
+          <li>Подтвердить синхронизацию конфигурации между узлами.</li>
+          
+        </ul>
+        
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Закрыть требования по безопасному удалению данных и объектов</h4>
+          <div class="badges">
+            <span class="badge">Высокий</span>
+            <span class="badge">Оргмеры &#43; защищённая утилизация</span>
+            <span class="badge">вручную</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> Политика удаления данных</p>
+        <p><strong>Основание:</strong> Очистка памяти и безопасное удаление (MEM-001)</p>
+        <p><strong>Почему:</strong> Подтвердите параметры memory_wipe_db_and_logs и для 4 класса memory_wipe_db_objects.</p>
+        
+        <ul>
+          
+          <li>Определить процедуру безопасного удаления файлов БД, журналов и резервных копий.</li>
+          
+          <li>Подтвердить многократную перезапись или криптографическое уничтожение носителя.</li>
+          
+          <li>Отдельно описать удаление объектов БД для усиленных классов.</li>
+          
+        </ul>
+        
+        
+      </article>
+      
+      <article class="proposal">
+        <div class="proposal-header">
+          <h4>Устранить выявленное несоответствие: Документирование параметров производительности</h4>
+          <div class="badges">
+            <span class="badge">Средний</span>
+            <span class="badge">Ручная проработка</span>
+            <span class="badge">вручную</span>
+          </div>
+        </div>
+        <p><strong>Цель изменения:</strong> Производительность</p>
+        <p><strong>Основание:</strong> Документирование параметров производительности (PERF-001)</p>
+        <p><strong>Почему:</strong> Подтвердите документирование параметров performance_sessions_documented, performance_queries_documented, performance_transactions_documented, performance_latency_documented, performance_lb_instances_documented.</p>
+        
+        <ul>
+          
+          <li>Сопоставить рекомендацию анализа с текущим регламентом.</li>
+          
+          <li>Подготовить изменение конфигурации, SQL или эксплуатационной процедуры.</li>
+          
+          <li>Повторно запустить анализ живой БД после внесения изменений.</li>
+          
+        </ul>
+        
+        
+      </article>
+      
+    
+  </section>
+</div>
+</body>
+</html>

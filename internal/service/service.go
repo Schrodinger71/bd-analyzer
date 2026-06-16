@@ -5,6 +5,7 @@ import (
 	"bd-scan/internal/collector"
 	"bd-scan/internal/model"
 	"bd-scan/internal/normalize"
+	"bd-scan/internal/remediation"
 	"bd-scan/internal/report"
 	"fmt"
 	"log"
@@ -89,6 +90,15 @@ func (s Service) runWithTimeout(req RunRequest, timeout time.Duration) (RunResul
 
 func (s Service) Export(result model.AnalysisResult, format report.Format) ([]byte, error) {
 	return report.Render(result, format)
+}
+
+func (s Service) ExportRun(result RunResult, format report.Format) ([]byte, error) {
+	return report.RenderDetailed(report.Input{
+		Analysis:       result.Analysis,
+		Snapshot:       &result.Snapshot,
+		Proposals:      remediation.Build(result.Analysis, result.Snapshot),
+		AutoApplicable: remediation.AutoApplicable(result.Analysis, result.Snapshot),
+	}, format)
 }
 
 func (s Service) Preview(result model.AnalysisResult) string {

@@ -3,8 +3,6 @@ package ui
 import (
 	"bd-scan/internal/remediation"
 	"fmt"
-	"log"
-	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -64,11 +62,8 @@ func GuiInit() {
 	metaEntry := widget.NewEntry()
 
 	collectionPreview := newReadOnlyPreview("Здесь появится результат сбора конфигурации из живой PostgreSQL и доступных файлов.")
-
 	analysisLog := newReadOnlyPreview("Журнал анализа пока пуст.")
-
 	reportPreview := newReadOnlyPreview("После анализа здесь появится текстовый отчет.")
-
 	statusLabel := widget.NewLabel("Ожидание запуска.")
 	progress := widget.NewProgressBarInfinite()
 	progress.Hide()
@@ -138,7 +133,6 @@ func GuiInit() {
 			sslModeSelect.Enable()
 			return
 		}
-
 		hostEntry.Disable()
 		portEntry.Disable()
 		dbEntry.Disable()
@@ -149,12 +143,13 @@ func GuiInit() {
 	liveCollectCheck.OnChanged = updateConnectionState
 	updateConnectionState(false)
 
-	hardeningPreview := newReadOnlyPreview("После анализа здесь появится план усиления для живой PostgreSQL и шаги по приведению к требованиям ФСТЭК.")
+	hardeningPreview := newReadOnlyPreview("После анализа здесь появится план усиления.")
 	autoApplyPreview := newReadOnlyPreview("Безопасные автоизменения станут доступны после анализа live-БД.")
 	var hardeningPlanText string
 
 	var btnConfig, btnAnalyze, btnReport, btnHarden, btnAbout *widget.Button
 	var collectButton, analyzeButton, exportButton, hardenButton, saveHardeningButton, applyHardeningButton *widget.Button
+
 	setBusy := func(active bool, message string) {
 		busy.Store(active)
 		statusLabel.SetText(message)
@@ -165,7 +160,6 @@ func GuiInit() {
 			progress.Stop()
 			progress.Hide()
 		}
-
 		for _, button := range []*widget.Button{collectButton, analyzeButton, exportButton, hardenButton, saveHardeningButton, applyHardeningButton} {
 			if button == nil {
 				continue
@@ -202,131 +196,65 @@ func GuiInit() {
 		setBusy(false, completionMessage)
 	}
 
+	// Легковесная функция — не генерирует полный план, только сохраняет ссылку
 	buildHardeningPlan := func() string {
 		if state.lastRun == nil {
-			return "Сначала выполните анализ защищенности. После этого модуль сформирует конкретный план изменений для live-БД, конфигурации PostgreSQL и сопутствующих регламентов."
+			return ""
 		}
 		return remediation.RenderText(state.lastRun.Analysis, state.lastRun.Snapshot)
 	}
 
-	buildHardeningPreviewSummary := func() string {
-		if state.lastRun == nil {
-			return "Сначала выполните анализ защищенности. После этого модуль сформирует краткую сводку и полный план усиления для сохранения в файл."
-		}
-
-		proposals := remediation.Build(state.lastRun.Analysis, state.lastRun.Snapshot)
-		auto := remediation.AutoApplicable(state.lastRun.Analysis, state.lastRun.Snapshot)
-
-		var builder strings.Builder
-		builder.WriteString("СВОДКА ПЛАНА УСИЛЕНИЯ\n")
-		builder.WriteString("====================\n")
-		builder.WriteString(fmt.Sprintf("Профиль контроля: %s\n", state.lastRun.Analysis.Class.Label()))
-		builder.WriteString(fmt.Sprintf("Всего рекомендаций: %d\n", len(proposals)))
-		builder.WriteString(fmt.Sprintf("Безопасных автоизменений: %d\n", len(auto)))
-		if len(proposals) == 0 {
-			builder.WriteString("\nКритичных доработок не выявлено.\n")
-			builder.WriteString("Полный текст плана можно сохранить в файл при необходимости.")
-			return builder.String()
-		}
-
-		builder.WriteString("\nПервые шаги:\n")
-		limit := len(proposals)
-		if limit > 3 {
-			limit = 3
-		}
-		for _, proposal := range proposals[:limit] {
-			builder.WriteString("- " + proposal.Title + "\n")
-		}
-		if len(proposals) > limit {
-			builder.WriteString(fmt.Sprintf("- ... еще рекомендаций: %d\n", len(proposals)-limit))
-		}
-		builder.WriteString("\nПолный текст плана доступен для сохранения в файл.")
-		return builder.String()
-	}
-
-	// buildAutoApplyPlan := func() string {
-	// 	if state.lastRun == nil {
-	// 		return "Безопасные автоизменения станут доступны после анализа live-БД."
-	// 	}
-	// 	if state.lastRun.Snapshot.Connection == nil {
-	// 		return "Автоприменение доступно только для живой PostgreSQL после онлайн-анализа."
-	// 	}
-	// 	return remediation.RenderAutoApplySummary(state.lastRun.Analysis, state.lastRun.Snapshot)
-	// }
-
-	buildAutoApplyPreviewSummary := func() string {
-		if state.lastRun == nil {
-			return "Безопасные автоизменения станут доступны после анализа live-БД."
-		}
-		if state.lastRun.Snapshot.Connection == nil {
-			return "Автоприменение доступно только для живой PostgreSQL после онлайн-анализа."
-		}
-
-		proposals := remediation.AutoApplicable(state.lastRun.Analysis, state.lastRun.Snapshot)
-		if len(proposals) == 0 {
-			return "Безопасные автоизменения не найдены. Для текущих несоответствий требуются ручные действия администратора."
-		}
-
-		var builder strings.Builder
-		builder.WriteString("БЕЗОПАСНЫЕ АВТОИЗМЕНЕНИЯ\n")
-		builder.WriteString("========================\n")
-		builder.WriteString(fmt.Sprintf("К применению доступно изменений: %d\n", len(proposals)))
-		limit := len(proposals)
-		if limit > 3 {
-			limit = 3
-		}
-		for _, proposal := range proposals[:limit] {
-			builder.WriteString("- " + proposal.Title + "\n")
-		}
-		if len(proposals) > limit {
-			builder.WriteString(fmt.Sprintf("- ... еще изменений: %d\n", len(proposals)-limit))
-		}
-		builder.WriteString("\nПодробности будут показаны в окне подтверждения.")
-		return builder.String()
-	}
-
 	refreshHardeningPlan := func() {
-		hardeningPlanText = buildHardeningPlan()
-		hardeningPreview.SetText(compactUIText(buildHardeningPreviewSummary(), 24, 120))
-		autoApplyPreview.SetText(compactUIText(buildAutoApplyPreviewSummary(), 24, 120))
-	}
-
-	resetHardeningPreview := func(request collector.Request) {
-		hardeningPlanText = ""
-		if request.UsesLiveConnection() {
-			hardeningPreview.SetText("План усиления не строится автоматически, чтобы не подвешивать интерфейс. Откройте вкладку \"Усиление\" и нажмите \"Обновить план усиления\".")
-			autoApplyPreview.SetText("Безопасные автоизменения будут показаны после ручного обновления плана усиления.")
+		if state.lastRun == nil {
+			hardeningPreview.SetText("Сначала выполните анализ защищенности.")
+			autoApplyPreview.SetText("Безопасные автоизменения станут доступны после анализа live-БД.")
 			return
 		}
-
-		hardeningPreview.SetText("План усиления доступен после онлайн-анализа живой PostgreSQL.")
-		autoApplyPreview.SetText("Безопасные автоизменения доступны только для live-БД.")
+		// Только базовая информация, без тяжёлых вычислений
+		hardeningPlanText = buildHardeningPlan()
+		hardeningPreview.SetText(fmt.Sprintf(
+			"Профиль: %s | Балл: %d/100 | Предупреждений: %d | Несоответствий: %d\n\nПлан усиления сформирован. Нажмите \"Сохранить план усиления\" для экспорта.",
+			state.lastRun.Analysis.Class.Label(),
+			state.lastRun.Analysis.Score,
+			state.lastRun.Analysis.Summary.Warnings,
+			state.lastRun.Analysis.Summary.Failed,
+		))
+		autoApplyPreview.SetText(fmt.Sprintf(
+			"Безопасных автоизменений: %d\nНажмите \"Применить безопасные изменения\" для запуска.",
+			len(remediation.AutoApplicable(state.lastRun.Analysis, state.lastRun.Snapshot)),
+		))
 	}
 
 	applyAnalysisResult := func(request collector.Request, result service.RunResult) string {
-		log.Printf("ui: building live/ui summaries")
-		analysisLogText := buildAnalysisLog(result.Analysis)
-		if request.UsesLiveConnection() {
-			analysisLogText = buildLiveAnalysisSummary(result.Analysis)
-		}
-		completionMessage := fmt.Sprintf("Анализ завершен: балл %d/100, предупреждений %d, несоответствий %d.", result.Analysis.Score, result.Analysis.Summary.Warnings, result.Analysis.Summary.Failed)
-		log.Printf("ui: assigning lastRun")
 		state.lastRun = &result
-		log.Printf("ui: updating collection preview")
+
+		// Обновляем сводку сбора
 		showCollection(result.Snapshot, result.Normalized)
-		log.Printf("ui: updating analysis log")
-		if !request.UsesLiveConnection() {
-			analysisLog.SetText(compactUIText(analysisLogText, 80, 140))
-		}
-		log.Printf("ui: updating hardening plan")
-		resetHardeningPreview(request)
-		if request.UsesLiveConnection() {
-			log.Printf("ui: updating live report preview placeholder")
-			reportPreview.SetText(compactUIText("Анализ завершен. Для живой PostgreSQL предварительный просмотр отчета отложен, чтобы не замедлять основной проход. Перейдите к сохранению отчета, когда будете готовы.", 20, 140))
-		} else {
-			log.Printf("ui: generating local report preview")
-			reportPreview.SetText(compactUIText(state.runner.Preview(result.Analysis), 120, 140))
-		}
+
+		// Легковесный вывод в журнал анализа
+		summaryText := fmt.Sprintf(
+			"АНАЛИЗ ЗАВЕРШЕН\nПрофиль: %s\nБалл: %d/100\nУспешно: %d | Предупреждений: %d | Несоответствий: %d",
+			result.Analysis.Class.Label(),
+			result.Analysis.Score,
+			result.Analysis.Summary.Passed,
+			result.Analysis.Summary.Warnings,
+			result.Analysis.Summary.Failed,
+		)
+		analysisLog.SetText(compactUIText(summaryText, 80, 140))
+
+		// Заглушка для превью отчёта
+		reportPreview.SetText(fmt.Sprintf(
+			"Анализ завершен (балл: %d/100).\n\nПредпросмотр отключен для производительности.\nПерейдите к сохранению отчета — будет сформирован полный документ.",
+			result.Analysis.Score,
+		))
+
+		// Базовая информация об усилении
+		hardeningPlanText = ""
+		hardeningPreview.SetText("План усиления доступен. Нажмите \"Обновить план усиления\" на вкладке Усиление.")
+		autoApplyPreview.SetText("Автоусиление доступно после анализа live-БД.")
+
+		completionMessage := fmt.Sprintf("Анализ завершен: балл %d/100, предупреждений %d, несоответствий %d.",
+			result.Analysis.Score, result.Analysis.Summary.Warnings, result.Analysis.Summary.Failed)
 		return completionMessage
 	}
 
@@ -344,7 +272,6 @@ func GuiInit() {
 			CollectRequest: request,
 			Class:          class,
 		})
-		log.Printf("ui: runAnalysis returned from service.Run")
 		if err != nil {
 			analysisLog.SetText(compactUIText("Ошибка анализа защищенности:\n"+err.Error(), 40, 140))
 			reportPreview.SetText(compactUIText("Отчет не сформирован из-за ошибки анализа.\n\n"+err.Error(), 40, 140))
@@ -353,9 +280,7 @@ func GuiInit() {
 		}
 
 		completionMessage := applyAnalysisResult(request, result)
-		log.Printf("ui: clearing busy state")
 		setBusy(false, completionMessage)
-		log.Printf("ui: runAnalysis finished")
 	}
 
 	applySafeHardening := func() {
@@ -381,9 +306,10 @@ func GuiInit() {
 			return
 		}
 
+		autoApplicable := remediation.AutoApplicable(state.lastRun.Analysis, state.lastRun.Snapshot)
 		summary := remediation.RenderAutoApplySummary(state.lastRun.Analysis, state.lastRun.Snapshot)
-		if len(remediation.AutoApplicable(state.lastRun.Analysis, state.lastRun.Snapshot)) == 0 {
-			autoApplyPreview.SetText(compactUIText(buildAutoApplyPreviewSummary(), 24, 120))
+
+		if len(autoApplicable) == 0 {
 			dialog.ShowInformation("Усиление", summary, window)
 			return
 		}
@@ -394,43 +320,65 @@ func GuiInit() {
 			}
 
 			setBusy(true, "Применяются безопасные изменения к живой PostgreSQL...")
-			analysisLog.SetText("Применяются безопасные и обратимые изменения к живой PostgreSQL...")
-			reportPreview.SetText("После автоприменения будет выполнен повторный онлайн-анализ.")
+			autoApplyPreview.SetText("Выполняется автоприменение...")
 
-			applyResult, err := remediation.ApplySafe(request, state.lastRun.Analysis, state.lastRun.Snapshot)
-			if err != nil {
-				analysisLog.SetText(compactUIText("Ошибка автоприменения:\n"+err.Error(), 40, 140))
-				autoApplyPreview.SetText(compactUIText("Автоприменение завершилось ошибкой. Подробности показаны в сообщении и доступны в журнале.", 12, 120))
-				setBusy(false, "Автоприменение завершилось ошибкой.")
-				return
-			}
+			previousAnalysis := state.lastRun.Analysis
+			go func() {
+				applyResult, err := remediation.ApplySafeWithProgress(request, previousAnalysis, state.lastRun.Snapshot, func(update remediation.ProgressUpdate) {
+					statusText := fmt.Sprintf("Автоусиление: шаг %d из %d. %s", update.Current, update.Total, update.Message)
+					statusLabel.SetText(statusText)
+					autoApplyPreview.SetText(statusText)
+				})
+				if err != nil {
+					autoApplyPreview.SetText("Ошибка автоприменения: " + err.Error())
+					setBusy(false, "Автоприменение завершилось ошибкой.")
+					dialog.ShowError(err, window)
+					return
+				}
 
-			applySummary := buildApplyResultSummary(applyResult)
-			autoApplyPreview.SetText(compactUIText(resultSummaryText(applyResult), 16, 120))
-			analysisLog.SetText(compactUIText(applySummary, 80, 140))
-			if !hasAppliedChanges(applyResult) {
-				refreshHardeningPlan()
-				setBusy(false, "Безопасные автоизменения не потребовались.")
-				dialog.ShowInformation("Усиление", applySummary, window)
-				return
-			}
+				// Проверяем были ли изменения
+				changesApplied := false
+				for _, change := range applyResult.Changes {
+					if change.Applied {
+						changesApplied = true
+						break
+					}
+				}
 
-			result, rerunErr := state.runner.Run(service.RunRequest{
-				CollectRequest: request,
-				Class:          state.class,
-			})
-			log.Printf("ui: applySafeHardening returned from service.Run")
-			if rerunErr != nil {
-				analysisLog.SetText(compactUIText(applySummary+"\n\nПовторный анализ после автоприменения завершился ошибкой:\n"+rerunErr.Error(), 80, 140))
-				reportPreview.SetText(compactUIText("Отчет после автоприменения не обновлен из-за ошибки повторного анализа.\n\n"+rerunErr.Error(), 40, 140))
-				setBusy(false, "Автоприменение завершено, но повторный анализ завершился ошибкой.")
-				dialog.ShowInformation("Усиление", applySummary, window)
-				return
-			}
+				if !changesApplied {
+					autoApplyPreview.SetText("Безопасные автоизменения не потребовались.")
+					setBusy(false, "Безопасные автоизменения не потребовались.")
+					dialog.ShowInformation("Усиление", applyResult.Summary(), window)
+					return
+				}
 
-			completionMessage := applyAnalysisResult(request, result)
-			setBusy(false, completionMessage)
-			dialog.ShowInformation("Усиление", applySummary, window)
+				// Повторный анализ
+				statusLabel.SetText("Автоизменения применены. Запускается повторная проверка...")
+				autoApplyPreview.SetText("Выполняется повторный анализ...")
+
+				result, rerunErr := state.runner.Run(service.RunRequest{
+					CollectRequest: request,
+					Class:          state.class,
+				})
+				if rerunErr != nil {
+					autoApplyPreview.SetText("Автоприменение выполнено, но повторный анализ завершился ошибкой.")
+					setBusy(false, "Автоприменение завершено, но повторный анализ завершился ошибкой.")
+					dialog.ShowInformation("Усиление", applyResult.Summary()+"\n\nПовторный анализ не удался: "+rerunErr.Error(), window)
+					return
+				}
+
+				// Обновляем состояние
+				state.lastRun = &result
+				verificationSummary := fmt.Sprintf(
+					"ПРОВЕРКА РЕЗУЛЬТАТА\nБаллы: %d -> %d/100\nПредупреждений: %d -> %d\nНесоответствий: %d -> %d",
+					previousAnalysis.Score, result.Analysis.Score,
+					previousAnalysis.Summary.Warnings, result.Analysis.Summary.Warnings,
+					previousAnalysis.Summary.Failed, result.Analysis.Summary.Failed,
+				)
+				autoApplyPreview.SetText(verificationSummary)
+				setBusy(false, "Автоприменение завершено.")
+				dialog.ShowInformation("Усиление", applyResult.Summary()+"\n\n"+verificationSummary, window)
+			}()
 		}, window)
 	}
 
@@ -446,25 +394,9 @@ func GuiInit() {
 			return
 		}
 
-		data, err := state.runner.Export(state.lastRun.Analysis, format)
+		data, err := state.runner.ExportRun(*state.lastRun, format)
 		if err != nil {
 			dialog.ShowError(err, window)
-			return
-		}
-
-		if path, handled, pickErr := tryPickSavePath("bd-analyzer-report."+format.Extension(), format.Extension()); handled {
-			if pickErr != nil {
-				dialog.ShowError(pickErr, window)
-				return
-			}
-			if path == "" {
-				return
-			}
-			if writeErr := os.WriteFile(path, data, 0o644); writeErr != nil {
-				dialog.ShowError(writeErr, window)
-				return
-			}
-			dialog.ShowInformation("Отчетность", fmt.Sprintf("Отчет сохранен: %s", path), window)
 			return
 		}
 
@@ -476,12 +408,10 @@ func GuiInit() {
 			if writer == nil {
 				return
 			}
-
 			if _, writeErr := writer.Write(data); writeErr != nil {
 				dialog.ShowError(writeErr, window)
 				return
 			}
-
 			path := ""
 			if writer.URI() != nil {
 				path = pathFromURI(writer.URI())
@@ -498,6 +428,10 @@ func GuiInit() {
 
 	exportHardeningPlan := func() {
 		if strings.TrimSpace(hardeningPlanText) == "" {
+			// Генерируем при необходимости
+			hardeningPlanText = buildHardeningPlan()
+		}
+		if strings.TrimSpace(hardeningPlanText) == "" {
 			dialog.ShowInformation("Усиление", "Сначала нажмите \"Обновить план усиления\", затем сохраните результат.", window)
 			return
 		}
@@ -507,22 +441,6 @@ func GuiInit() {
 		}
 
 		data := []byte(hardeningPlanText)
-		if path, handled, pickErr := tryPickSavePath("bd-analyzer-hardening-plan.txt", "txt"); handled {
-			if pickErr != nil {
-				dialog.ShowError(pickErr, window)
-				return
-			}
-			if path == "" {
-				return
-			}
-			if writeErr := os.WriteFile(path, data, 0o644); writeErr != nil {
-				dialog.ShowError(writeErr, window)
-				return
-			}
-			dialog.ShowInformation("Усиление", fmt.Sprintf("План усиления сохранен: %s", path), window)
-			return
-		}
-
 		saveDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, saveErr error) {
 			if saveErr != nil {
 				dialog.ShowError(saveErr, window)
@@ -535,7 +453,6 @@ func GuiInit() {
 				dialog.ShowError(writeErr, window)
 				return
 			}
-
 			path := ""
 			if writer.URI() != nil {
 				path = pathFromURI(writer.URI())
@@ -587,7 +504,7 @@ func GuiInit() {
 			box := container.NewVBox(
 				widget.NewLabelWithStyle("Модуль сбора конфигурации", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 				widget.NewSeparator(),
-				wrappedLabel("Можно анализировать только локальные конфигурационные файлы или дополнительно дочитать сведения из живой PostgreSQL. Подключение к БД выполняется только если вы явно включите его ниже."),
+				wrappedLabel("Можно анализировать только локальные конфигурационные файлы или дополнительно дочитать сведения из живой PostgreSQL."),
 				compactField("Цель анализа", targetEntry),
 				liveCollectCheck,
 				widget.NewLabelWithStyle("Подключение", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
@@ -622,6 +539,14 @@ func GuiInit() {
 
 		case 2:
 			exportButton = widget.NewButtonWithIcon("Сохранить отчет", theme.DocumentSaveIcon(), exportReport)
+			if state.lastRun != nil {
+				reportPreview.SetText(fmt.Sprintf(
+					"Последний анализ: %s | Балл: %d/100 | Несоответствий: %d\n\nПредпросмотр отключен. Нажмите \"Сохранить отчет\" для экспорта полного документа.",
+					state.lastRun.Analysis.Class.Label(),
+					state.lastRun.Analysis.Score,
+					state.lastRun.Analysis.Summary.Failed,
+				))
+			}
 			box := container.NewVBox(
 				widget.NewLabelWithStyle("Модуль формирования отчетности", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 				widget.NewSeparator(),
@@ -629,7 +554,7 @@ func GuiInit() {
 				formatSelect,
 				exportButton,
 				widget.NewSeparator(),
-				widget.NewLabel("Предварительный просмотр:"),
+				widget.NewLabel("Информация:"),
 				reportPreview,
 			)
 			rightScroller.Content = container.NewPadded(box)
@@ -641,7 +566,7 @@ func GuiInit() {
 			box := container.NewVBox(
 				widget.NewLabelWithStyle("Модуль усиления защищенности", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 				widget.NewSeparator(),
-				wrappedLabel("Здесь формируется безопасный план изменений для живой PostgreSQL: что менять в БД, что править в конфигурации и какие меры нужно подтвердить для соответствия требованиям ФСТЭК."),
+				wrappedLabel("Здесь формируется безопасный план изменений для живой PostgreSQL."),
 				hardenButton,
 				applyHardeningButton,
 				saveHardeningButton,
@@ -657,10 +582,7 @@ func GuiInit() {
 		case 4:
 			infoText := widget.NewLabelWithStyle(
 				"BD Scan v1.0\n\n"+
-					"Программное средство контроля защищенности конфигураций СУБД PostgreSQL.\n"+
-					"Интерфейс возвращен к исходной структуре с левой навигацией и темной темой,\n"+
-					"при этом внутри уже работает реальный сбор конфигурации из живой базы,\n"+
-					"движок правил анализа и экспорт отчетов.\n\n"+
+					"Программное средство контроля защищенности конфигураций СУБД PostgreSQL.\n\n"+
 					"Поддерживаются два источника данных:\n"+
 					"1. Подключение к существующей PostgreSQL по host/port/login/password.\n"+
 					"2. Дополнительные локальные конфигурационные файлы и metadata JSON.",
@@ -668,7 +590,6 @@ func GuiInit() {
 				fyne.TextStyle{},
 			)
 			infoText.Wrapping = fyne.TextWrapWord
-
 			box := container.NewVBox(
 				widget.NewLabelWithStyle("О приложении", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 				widget.NewSeparator(),
@@ -707,10 +628,7 @@ func GuiInit() {
 }
 
 func compactField(title string, field fyne.CanvasObject) fyne.CanvasObject {
-	return container.NewVBox(
-		widget.NewLabel(title),
-		field,
-	)
+	return container.NewVBox(widget.NewLabel(title), field)
 }
 
 func wrappedLabel(text string) *widget.Label {
@@ -719,12 +637,10 @@ func wrappedLabel(text string) *widget.Label {
 	return label
 }
 
-func newReadOnlyPreview(text string) *widget.Entry {
-	entry := widget.NewMultiLineEntry()
-	entry.Disable()
-	entry.Wrapping = fyne.TextWrapBreak
-	entry.SetText(text)
-	return entry
+func newReadOnlyPreview(text string) *widget.Label {
+	label := widget.NewLabel(text)
+	label.Wrapping = fyne.TextWrapWord
+	return label
 }
 
 func compactUIText(text string, maxLines, maxLineLen int) string {
@@ -735,102 +651,11 @@ func compactUIText(text string, maxLines, maxLineLen int) string {
 			lines[i] = shortenUIString(line, maxLineLen)
 		}
 	}
-
 	if maxLines > 0 && len(lines) > maxLines {
 		hidden := len(lines) - maxLines
 		lines = append(lines[:maxLines], fmt.Sprintf("... сокращено строк: %d", hidden))
 	}
-
 	return strings.Join(lines, "\n")
-}
-
-func buildLiveAnalysisSummary(result model.AnalysisResult) string {
-	var builder strings.Builder
-
-	builder.WriteString("РЕЗУЛЬТАТ ОНЛАЙН-АНАЛИЗА ЖИВОЙ PostgreSQL\n")
-	builder.WriteString("========================================\n")
-	builder.WriteString(fmt.Sprintf("Профиль контроля: %s\n", result.Class.Label()))
-	builder.WriteString(fmt.Sprintf("Итоговый балл: %d/100\n", result.Score))
-	builder.WriteString(fmt.Sprintf("Успешно: %d\n", result.Summary.Passed))
-	builder.WriteString(fmt.Sprintf("Предупреждения: %d\n", result.Summary.Warnings))
-	builder.WriteString(fmt.Sprintf("Несоответствия: %d\n", result.Summary.Failed))
-
-	issues := result.NonPassingFindings()
-	if len(issues) > 0 {
-		builder.WriteString("\nКлючевые замечания:\n")
-		limit := len(issues)
-		if limit > 3 {
-			limit = 3
-		}
-		for _, finding := range issues[:limit] {
-			builder.WriteString(fmt.Sprintf("- [%s] %s\n", strings.ToUpper(string(finding.Status)), finding.Title))
-		}
-		if len(issues) > limit {
-			builder.WriteString(fmt.Sprintf("- ... еще замечаний: %d\n", len(issues)-limit))
-		}
-	}
-
-	if len(result.Notes) > 0 {
-		builder.WriteString("\nПримечание:\n")
-		builder.WriteString("- Есть дополнительные замечания и допущения по профилю. Смотрите полный отчет.\n")
-	}
-
-	builder.WriteString("\nПодробный отчет можно сохранить через вкладку отчетности.")
-	return builder.String()
-}
-
-func buildApplyResultSummary(result remediation.ApplyResult) string {
-	var builder strings.Builder
-	builder.WriteString("РЕЗУЛЬТАТ БЕЗОПАСНОГО АВТОПРИМЕНЕНИЯ\n")
-	builder.WriteString("=================================\n")
-	builder.WriteString(result.Summary())
-	builder.WriteString("\n")
-	if len(result.Changes) == 0 {
-		return builder.String()
-	}
-
-	for _, change := range result.Changes {
-		status := "ошибка"
-		if change.Applied {
-			status = "применено"
-		}
-		builder.WriteString(fmt.Sprintf("\n- %s\n", change.Title))
-		builder.WriteString(fmt.Sprintf("  Статус: %s\n", status))
-		if change.Statement != "" {
-			builder.WriteString(fmt.Sprintf("  SQL: %s\n", change.Statement))
-		}
-		if change.Message != "" {
-			builder.WriteString(fmt.Sprintf("  Детали: %s\n", change.Message))
-		}
-	}
-	return builder.String()
-}
-
-func resultSummaryText(result remediation.ApplyResult) string {
-	var builder strings.Builder
-	builder.WriteString("БЕЗОПАСНЫЕ АВТОИЗМЕНЕНИЯ\n")
-	builder.WriteString("========================\n")
-	builder.WriteString(result.Summary())
-	if len(result.Changes) == 0 {
-		return builder.String()
-	}
-
-	builder.WriteString("\nПервые изменения:\n")
-	limit := len(result.Changes)
-	if limit > 3 {
-		limit = 3
-	}
-	for _, change := range result.Changes[:limit] {
-		status := "ошибка"
-		if change.Applied {
-			status = "применено"
-		}
-		builder.WriteString(fmt.Sprintf("- %s: %s\n", change.Title, status))
-	}
-	if len(result.Changes) > limit {
-		builder.WriteString(fmt.Sprintf("- ... еще изменений: %d\n", len(result.Changes)-limit))
-	}
-	return builder.String()
 }
 
 func hasAppliedChanges(result remediation.ApplyResult) bool {
