@@ -3,6 +3,7 @@ package ui
 import (
 	"bd-scan/internal/remediation"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -403,6 +404,22 @@ func GuiInit() {
 			return
 		}
 
+		if path, handled, pickErr := tryPickSavePath("bd-scan-report."+format.Extension(), format.Extension()); handled {
+			if pickErr != nil {
+				dialog.ShowError(pickErr, window)
+				return
+			}
+			if path == "" {
+				return
+			}
+			if writeErr := os.WriteFile(path, data, 0o644); writeErr != nil {
+				dialog.ShowError(writeErr, window)
+				return
+			}
+			dialog.ShowInformation("Отчетность", fmt.Sprintf("Отчет сохранен: %s", path), window)
+			return
+		}
+
 		saveDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, saveErr error) {
 			if saveErr != nil {
 				dialog.ShowError(saveErr, window)
@@ -444,6 +461,22 @@ func GuiInit() {
 		}
 
 		data := []byte(hardeningPlanText)
+		if path, handled, pickErr := tryPickSavePath("bd-scan-hardening-plan.txt", "txt"); handled {
+			if pickErr != nil {
+				dialog.ShowError(pickErr, window)
+				return
+			}
+			if path == "" {
+				return
+			}
+			if writeErr := os.WriteFile(path, data, 0o644); writeErr != nil {
+				dialog.ShowError(writeErr, window)
+				return
+			}
+			dialog.ShowInformation("Усиление", fmt.Sprintf("План усиления сохранен: %s", path), window)
+			return
+		}
+
 		saveDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, saveErr error) {
 			if saveErr != nil {
 				dialog.ShowError(saveErr, window)

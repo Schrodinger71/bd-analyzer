@@ -10,6 +10,7 @@ import (
 	"bd-scan/internal/normalize"
 	"bd-scan/internal/report"
 	"bd-scan/internal/service"
+
 	"fyne.io/fyne"
 	"fyne.io/fyne/app"
 	"fyne.io/fyne/container"
@@ -62,7 +63,7 @@ func modernGuiInit() {
 
 	reportPreview := widget.NewLabel("")
 	reportPreview.Wrapping = fyne.TextWrapWord
-	reportPreview.SetText("После завершения анализа здесь появится текстовый отчет.")
+	reportPreview.SetText("После завершения анализа здесь появится краткая сводка. Предпросмотр полного отчета отключен для стабильности интерфейса.")
 
 	statusLabel := widget.NewLabel("Ожидание запуска.")
 	progress := widget.NewProgressBarInfinite()
@@ -136,7 +137,7 @@ func modernGuiInit() {
 		state.lastRun = &result
 		collectionPreview.SetText(buildCollectionSummary(result.Snapshot, result.Normalized))
 		analysisLog.SetText(buildAnalysisLog(result.Analysis))
-		reportPreview.SetText(state.runner.Preview(result.Analysis))
+		reportPreview.SetText(buildReportSummary(result.Analysis))
 		statusLabel.SetText(fmt.Sprintf("Анализ завершен: итоговый балл %d/100, предупреждений %d, несоответствий %d.", result.Analysis.Score, result.Analysis.Summary.Warnings, result.Analysis.Summary.Failed))
 	}
 
@@ -239,7 +240,7 @@ func modernGuiInit() {
 		),
 		widget.NewButtonWithIcon("Сохранить отчет", theme.DocumentSaveIcon(), exportReport),
 		widget.NewSeparator(),
-		widget.NewLabel("Текстовый предварительный просмотр:"),
+		widget.NewLabel("Сводка по отчету:"),
 		reportPreview,
 	))
 
@@ -370,6 +371,21 @@ func buildAnalysisLog(result model.AnalysisResult) string {
 			builder.WriteString("  - " + shortenUIString(note, 100) + "\n")
 		}
 	}
+
+	return builder.String()
+}
+
+func buildReportSummary(result model.AnalysisResult) string {
+	var builder strings.Builder
+
+	builder.WriteString("ПОЛНЫЙ ПРЕДПРОСМОТР ОТЧЕТА ОТКЛЮЧЕН\n")
+	builder.WriteString("==================================\n")
+	builder.WriteString(fmt.Sprintf("Профиль контроля: %s\n", result.Class.Label()))
+	builder.WriteString(fmt.Sprintf("Итоговый балл: %d/100\n", result.Score))
+	builder.WriteString(fmt.Sprintf("Успешно: %d\n", result.Summary.Passed))
+	builder.WriteString(fmt.Sprintf("Предупреждения: %d\n", result.Summary.Warnings))
+	builder.WriteString(fmt.Sprintf("Несоответствия: %d\n", result.Summary.Failed))
+	builder.WriteString("\nДля проверки результата сохраните отчет в нужном формате через обычный диалог проводника.")
 
 	return builder.String()
 }
