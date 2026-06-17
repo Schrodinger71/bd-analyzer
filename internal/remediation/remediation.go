@@ -22,6 +22,7 @@ type Proposal struct {
 	Priority     string
 	ApplyMode    string
 	Target       string
+	ControlRefs  []string
 	Rationale    string
 	Steps        []string
 	Snippet      string
@@ -56,6 +57,19 @@ type ProgressUpdate struct {
 }
 
 type ProgressFunc func(ProgressUpdate)
+
+type Dashboard struct {
+	TotalProposals     int
+	AutoApplicable     int
+	ManualActions      int
+	CriticalFindings   int
+	HighFindings       int
+	WarningFindings    int
+	FailedFindings     int
+	QuickWins          []Proposal
+	ManualTop          []Proposal
+	CoveredControlRefs []string
+}
 
 func (r ApplyResult) HasFailures() bool {
 	for _, change := range r.Changes {
@@ -119,6 +133,130 @@ func AutoApplicable(result model.AnalysisResult, snapshot model.ConfigSnapshot) 
 	return filtered
 }
 
+func BuildDashboard(result model.AnalysisResult, snapshot model.ConfigSnapshot) Dashboard {
+	proposals := Build(result, snapshot)
+	autoApplicable := AutoApplicable(result, snapshot)
+
+	dashboard := Dashboard{
+		TotalProposals: len(proposals),
+		AutoApplicable: len(autoApplicable),
+		ManualActions:  len(proposals) - len(autoApplicable),
+	}
+
+	for _, finding := range result.Findings {
+		switch finding.Status {
+		case model.StatusWarn:
+			dashboard.WarningFindings++
+		case model.StatusFail:
+			dashboard.FailedFindings++
+		}
+
+		if finding.Status == model.StatusPass {
+			continue
+		}
+		switch finding.Severity {
+		case model.SeverityCritical:
+			dashboard.CriticalFindings++
+		case model.SeverityHigh:
+			dashboard.HighFindings++
+		}
+	}
+
+	dashboard.QuickWins = append(dashboard.QuickWins, autoApplicable...)
+	for _, proposal := range proposals {
+		if proposal.AutoApply {
+			continue
+		}
+		dashboard.ManualTop = append(dashboard.ManualTop, proposal)
+	}
+	if len(dashboard.QuickWins) > 4 {
+		dashboard.QuickWins = dashboard.QuickWins[:4]
+	}
+	if len(dashboard.ManualTop) > 6 {
+		dashboard.ManualTop = dashboard.ManualTop[:6]
+	}
+	dashboard.CoveredControlRefs = collectControlRefs(proposals)
+	return dashboard
+}
+
+func RenderDashboardSummary(result model.AnalysisResult, snapshot model.ConfigSnapshot) string {
+	dashboard := BuildDashboard(result, snapshot)
+	var builder strings.Builder
+
+	builder.WriteString("ПАНЕЛЬ УСИЛЕНИЯ И СООТВЕТСТВИЯ ФСТЭК\n")
+	builder.WriteString("====================================\n")
+	builder.WriteString(fmt.Sprintf("Профиль: %s\n", result.Class.Label()))
+	builder.WriteString(fmt.Sprintf("Итоговый балл: %d/100\n", result.Score))
+	builder.WriteString(fmt.Sprintf("Несоответствий: %d | Предупреждений: %d\n", dashboard.FailedFindings, dashboard.WarningFindings))
+	builder.WriteString(fmt.Sprintf("Критичных зон: %d | Высоких зон: %d\n", dashboard.CriticalFindings, dashboard.HighFindings))
+	builder.WriteString(fmt.Sprintf("Мер усиления: %d | Автоматических: %d | Ручных: %d\n", dashboard.TotalProposals, dashboard.AutoApplicable, dashboard.ManualActions))
+	if snapshot.Connection != nil {
+		builder.WriteString(fmt.Sprintf("Live PostgreSQL: %s:%d/%s (%s)\n", snapshot.Connection.Host, snapshot.Connection.Port, snapshot.Connection.Database, snapshot.Connection.User))
+	}
+	if len(dashboard.CoveredControlRefs) > 0 {
+		builder.WriteString("Контрольные пункты ФСТЭК: " + strings.Join(dashboard.CoveredControlRefs, ", ") + "\n")
+	}
+	if len(dashboard.QuickWins) > 0 {
+		builder.WriteString("\nБыстрые безопасные шаги:\n")
+		for _, proposal := range dashboard.QuickWins {
+			builder.WriteString("- " + proposal.Title + "\n")
+		}
+	}
+	return builder.String()
+}
+
+func RenderManualPlan(result model.AnalysisResult, snapshot model.ConfigSnapshot) string {
+	proposals := Build(result, snapshot)
+	var builder strings.Builder
+
+	builder.WriteString("РУЧНОЙ ПЛАН УСИЛЕНИЯ\n")
+	builder.WriteString("===================\n")
+
+	count := 0
+	for _, proposal := range proposals {
+		if proposal.AutoApply {
+			continue
+		}
+		count++
+		builder.WriteString(fmt.Sprintf("%d. %s\n", count, proposal.Title))
+		builder.WriteString(fmt.Sprintf("   Приоритет: %s\n", proposal.Priority))
+		builder.WriteString(fmt.Sprintf("   Способ: %s\n", proposal.ApplyMode))
+		if proposal.Target != "" {
+			builder.WriteString(fmt.Sprintf("   Цель: %s\n", proposal.Target))
+		}
+		if len(proposal.ControlRefs) > 0 {
+			builder.WriteString(fmt.Sprintf("   ФСТЭК: %s\n", strings.Join(proposal.ControlRefs, ", ")))
+		}
+		for _, step := range proposal.Steps {
+			builder.WriteString("   - " + step + "\n")
+		}
+		builder.WriteString("\n")
+	}
+
+	if count == 0 {
+		builder.WriteString("Критичных ручных доработок не требуется.\n")
+	}
+	return builder.String()
+}
+
+func RenderControlCoverage(result model.AnalysisResult, snapshot model.ConfigSnapshot) string {
+	proposals := Build(result, snapshot)
+	if len(proposals) == 0 {
+		return "Контрольные пункты ФСТЭК закрыты без дополнительных мер усиления."
+	}
+
+	var builder strings.Builder
+	builder.WriteString("ПОКРЫТИЕ КОНТРОЛЬНЫХ ПУНКТОВ ФСТЭК\n")
+	builder.WriteString("=================================\n")
+	for _, proposal := range proposals {
+		if len(proposal.ControlRefs) == 0 {
+			continue
+		}
+		builder.WriteString("- " + strings.Join(proposal.ControlRefs, ", ") + ": " + proposal.Title + "\n")
+	}
+	return builder.String()
+}
+
 func RenderText(result model.AnalysisResult, snapshot model.ConfigSnapshot) string {
 	proposals := Build(result, snapshot)
 	var builder strings.Builder
@@ -153,6 +291,9 @@ func RenderText(result model.AnalysisResult, snapshot model.ConfigSnapshot) stri
 		if proposal.Target != "" {
 			builder.WriteString(fmt.Sprintf("   Цель изменения: %s\n", proposal.Target))
 		}
+		if len(proposal.ControlRefs) > 0 {
+			builder.WriteString(fmt.Sprintf("   ФСТЭК: %s\n", strings.Join(proposal.ControlRefs, ", ")))
+		}
 		builder.WriteString(fmt.Sprintf("   Основание: %s (%s)\n", proposal.FindingName, proposal.FindingID))
 		builder.WriteString(fmt.Sprintf("   Почему: %s\n", proposal.Rationale))
 		if len(proposal.Steps) > 0 {
@@ -170,7 +311,7 @@ func RenderText(result model.AnalysisResult, snapshot model.ConfigSnapshot) stri
 		builder.WriteString("\n")
 	}
 
-	builder.WriteString("Примечание: автоприменение ограничено безопасными и обратимыми изменениями. Опасные действия по ролям, pg_hba, TLS и архитектуре кластера подтверждаются вручную.\n")
+	builder.WriteString("Примечание: автоприменение ограничено безопасными и обратимыми изменениями. Ролевая модель, кластер, регламенты и сертификационные подтверждения выполняются вручную.\n")
 	return builder.String()
 }
 
@@ -184,6 +325,9 @@ func RenderAutoApplySummary(result model.AnalysisResult, snapshot model.ConfigSn
 	builder.WriteString("Будут применены только безопасные изменения к живой PostgreSQL:\n")
 	for _, proposal := range proposals {
 		builder.WriteString("- " + proposal.Title + "\n")
+		if len(proposal.ControlRefs) > 0 {
+			builder.WriteString("  ФСТЭК: " + strings.Join(proposal.ControlRefs, ", ") + "\n")
+		}
 		for _, statement := range proposal.SQL {
 			builder.WriteString("  " + statement + "\n")
 		}
@@ -393,6 +537,7 @@ func ApplySafeWithProgress(req collector.Request, result model.AnalysisResult, s
 
 func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot model.ConfigSnapshot) []Proposal {
 	base := Proposal{
+		ControlRefs: controlRefsForFinding(finding.ID),
 		Priority:    severityLabel(finding.Severity),
 		Rationale:   finding.Recommendation,
 		FindingID:   finding.ID,
@@ -400,48 +545,89 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 	}
 
 	switch finding.ID {
+	case "TRUST-001":
+		return []Proposal{mergeProposal(base, Proposal{
+			Key:       "trust-profile-evidence",
+			Title:     "Подтвердить требуемый уровень доверия СУБД",
+			ApplyMode: "Документация и metadata JSON",
+			Target:    "Сертификационный профиль СУБД",
+			Steps: []string{
+				"Проверить сертификат и эксплуатационную документацию СУБД на соответствие требуемому уровню доверия.",
+				"Зафиксировать параметр dbms_trust_level в metadata JSON и артефактах аудита.",
+				"Привязать подтверждение к выбранному классу защиты и экземпляру БД.",
+			},
+			Snippet: "\"settings\": {\n  \"dbms_trust_level\": \"4\"\n}",
+		})}
+	case "OS-001":
+		return []Proposal{mergeProposal(base, Proposal{
+			Key:       "os-certification-evidence",
+			Title:     "Подтвердить сертифицированную ОС и ее класс защиты",
+			ApplyMode: "Документация, инвентаризация и metadata JSON",
+			Target:    "Хостовая операционная система",
+			Steps: []string{
+				"Подтвердить, что PostgreSQL размещен в сертифицированной ОС допустимого класса защиты.",
+				"Задать в metadata JSON параметры os_certified и os_protection_class.",
+				"Синхронизировать сведения с паспортом ИС и контуром сопровождения.",
+			},
+			Snippet: "\"settings\": {\n  \"os_certified\": \"true\",\n  \"os_protection_class\": \"4\"\n}",
+		})}
 	case "AUTH-001":
 		return []Proposal{mergeProposal(base, Proposal{
-			Key:          "auth-password-encryption",
-			Title:        "Усилить политику хранения паролей",
-			ApplyMode:    "Live SQL + парольная ротация",
-			Target:       "PostgreSQL cluster",
-			AutoApply:    true,
-			ReloadConfig: true,
-			SQL: []string{
-				"ALTER SYSTEM SET password_encryption = 'scram-sha-256'",
-			},
+			Key:       "auth-password-policy",
+			Title:     "Усилить парольную политику и лимит попыток входа",
+			ApplyMode: "Metadata JSON + регламент доступа",
+			Target:    "Политика аутентификации",
 			Steps: []string{
-				"Включить SCRAM для новых паролей.",
-				"После автоприменения вручную перезадать пароли критичных учетных записей.",
-				"Задокументировать требования по длине и алфавиту паролей в metadata/регламенте.",
+				fmt.Sprintf("Установить password_min_length не ниже %d.", result.Profile.MinPasswordLength),
+				fmt.Sprintf("Установить password_alphabet_size не ниже %d.", result.Profile.MinPasswordAlphabet),
+				fmt.Sprintf("Ограничить auth_max_failed_attempts значением не выше %d.", result.Profile.MaxFailedAuthAttempts),
+				"Зафиксировать требования в metadata JSON и в регламенте выдачи доступа.",
 			},
-			Snippet: "ALTER SYSTEM SET password_encryption = 'scram-sha-256';\nSELECT pg_reload_conf();\n-- Далее вручную выполнить ALTER ROLE <role> WITH PASSWORD '<new-strong-password>';",
+			Snippet: fmt.Sprintf("\"settings\": {\n  \"password_min_length\": \"%d\",\n  \"password_alphabet_size\": \"%d\",\n  \"auth_max_failed_attempts\": \"%d\"\n}", result.Profile.MinPasswordLength, result.Profile.MinPasswordAlphabet, result.Profile.MaxFailedAuthAttempts),
 		})}
 	case "AUTH-002":
-		return []Proposal{mergeProposal(base, Proposal{
-			Key:       "auth-lifecycle-org",
-			Title:     "Закрыть пробелы жизненного цикла аутентификации",
-			ApplyMode: "Оргмеры + внешняя интеграция",
-			Target:    "Политика доступа и PAM/SSO",
-			Steps: []string{
-				"Ввести смену первичного пароля при выдаче доступа.",
-				"Настроить блокировку после серии неуспешных входов через внешний контур аутентификации.",
-				"Подтвердить masking/lockout/unlock в эксплуатационной документации.",
-			},
-		})}
+		return []Proposal{
+			mergeProposal(base, Proposal{
+				Key:          "auth-password-encryption",
+				Title:        "Перевести хранение новых паролей на SCRAM",
+				ApplyMode:    "ALTER SYSTEM + pg_reload_conf()",
+				Target:       firstNonEmpty(snapshot.Sources.PostgreSQLConf, "postgresql.conf"),
+				AutoApply:    true,
+				ReloadConfig: true,
+				SQL: []string{
+					"ALTER SYSTEM SET password_encryption = 'scram-sha-256'",
+				},
+				Steps: []string{
+					"Включить SCRAM для новых паролей и задокументировать это как часть защищенного хранения аутентификационной информации.",
+					"После применения вручную перевыпустить пароли критичных учетных записей.",
+				},
+				Snippet: "ALTER SYSTEM SET password_encryption = 'scram-sha-256';\nSELECT pg_reload_conf();\nALTER ROLE <role> WITH PASSWORD '<new-strong-password>';",
+			}),
+			mergeProposal(base, Proposal{
+				Key:       "auth-lifecycle-org",
+				Title:     "Закрыть пробелы жизненного цикла аутентификации",
+				ApplyMode: "Оргмеры + внешняя интеграция",
+				Target:    "Политика доступа и PAM/SSO",
+				Steps: []string{
+					"Ввести смену первичного пароля при выдаче доступа.",
+					"Настроить блокировку после серии неуспешных входов через внешний контур аутентификации.",
+					"Подтвердить masking, lockout и unlock в эксплуатационной документации и metadata JSON.",
+				},
+				Snippet: "\"settings\": {\n  \"password_change_on_first_login\": \"true\",\n  \"auth_lockout_enabled\": \"true\",\n  \"auth_unlock_supported\": \"true\",\n  \"password_input_masking\": \"true\"\n}",
+			}),
+		}
 	case "ACCESS-001":
 		return []Proposal{mergeProposal(base, Proposal{
-			Key:       "access-hba-manual",
-			Title:     "Сузить правила клиентского доступа и исключить небезопасные методы",
-			ApplyMode: "pg_hba.conf",
-			Target:    firstNonEmpty(snapshot.Sources.HBAConf, "pg_hba.conf"),
+			Key:       "access-dac-rbac-confirmation",
+			Title:     "Подтвердить дискреционную и ролевую модель доступа",
+			ApplyMode: "Metadata JSON + модель ролей",
+			Target:    "Матрица управления доступом",
 			Steps: []string{
-				"Убрать trust/password для сетевых подключений.",
-				"Ограничить подсети конкретными адресами или сегментами администраторов и приложений.",
-				"Перевести сетевые правила на hostssl + scram-sha-256.",
+				"Подтвердить применение DAC и RBAC в целевой инсталляции PostgreSQL.",
+				"Зафиксировать access_dac_enabled и access_rbac_enabled в metadata JSON.",
+				"Привязать модель ролей к ролям СУБД, администратора БД и прикладных пользователей.",
 			},
-			Snippet: "hostssl all all 127.0.0.1/32 scram-sha-256\nhostssl all all ::1/128 scram-sha-256\n# заменить широкие и trust-правила на адресно ограниченные",
+			Snippet: "\"settings\": {\n  \"access_dac_enabled\": \"true\",\n  \"access_rbac_enabled\": \"true\"\n}",
 		})}
 	case "ACCESS-002":
 		return []Proposal{mergeProposal(base, Proposal{
@@ -452,7 +638,7 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 			Steps: []string{
 				"Выделить отдельные роли администратора СУБД, администратора БД и прикладного пользователя.",
 				"Сократить число SUPERUSER-ролей до минимально необходимого набора.",
-				"Проверить права роли public и избыточные атрибуты REPLICATION/BYPASSRLS.",
+				"Проверить права роли public и избыточные атрибуты REPLICATION и BYPASSRLS.",
 			},
 			Snippet: "REVOKE CREATE ON SCHEMA public FROM PUBLIC;\nREVOKE ALL ON DATABASE <db_name> FROM PUBLIC;\nALTER ROLE <role> NOSUPERUSER NOBYPASSRLS NOREPLICATION;",
 		})}
@@ -463,37 +649,109 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 			ApplyMode: "Live SQL + модель прав",
 			Target:    "ACL объектов и процедур",
 			Steps: []string{
-				"Определить ролевую матрицу GRANT/REVOKE по схемам, таблицам и функциям.",
+				"Определить ролевую матрицу GRANT и REVOKE по схемам, таблицам и функциям.",
 				"Запретить blanket-доступ для PUBLIC.",
-				"Закрепить минимально необходимые ACL в migration-скриптах.",
+				"Закрепить минимально необходимые ACL в migration-скриптах и эксплуатационной документации.",
 			},
 			Snippet: "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;\nGRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO <app_role>;\nGRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO <app_role>;",
 		})}
-	case "AUD-001", "AUD-002":
+	case "INT-001":
 		return []Proposal{mergeProposal(base, Proposal{
-			Key:          "audit-safe-logging",
-			Title:        "Усилить журналирование событий безопасности",
-			ApplyMode:    "ALTER SYSTEM + pg_reload_conf()",
-			Target:       firstNonEmpty(snapshot.Sources.PostgreSQLConf, "postgresql.conf"),
-			AutoApply:    true,
-			ReloadConfig: true,
-			SQL: []string{
-				"ALTER SYSTEM SET log_connections = 'on'",
-				"ALTER SYSTEM SET log_disconnections = 'on'",
-				"ALTER SYSTEM SET log_min_error_statement = 'error'",
-				"ALTER SYSTEM SET log_line_prefix = '%m [%p] db=%d,user=%u,app=%a,client=%h '",
-				"ALTER SYSTEM SET log_error_verbosity = 'verbose'",
-				"ALTER SYSTEM SET log_file_mode = '0600'",
-				"ALTER SYSTEM SET log_rotation_age = '1d'",
-				"ALTER SYSTEM SET log_rotation_size = '100MB'",
-			},
+			Key:       "integrity-controls",
+			Title:     "Подтвердить контроль целостности конфигурации и блокировки",
+			ApplyMode: "Оргмеры + контроль запуска",
+			Target:    "Конфигурация PostgreSQL и файловая система",
 			Steps: []string{
-				"Безопасно включить логирование подключений, отключений и ошибок.",
-				"Отдельно оценить возможность включения pgAudit, если расширение установлено и рестарт допустим.",
-				"Проверить защищённость каталога журналов и порядок архивации.",
+				"Внедрить контроль целостности конфигурационных файлов и процедур при запуске.",
+				"Подтвердить уведомления администраторов и блокирование доступа пользователей при нарушении целостности.",
+				"Задокументировать процедуру проверки и порядок реагирования.",
 			},
-			Snippet: "ALTER SYSTEM SET log_connections = 'on';\nALTER SYSTEM SET log_disconnections = 'on';\nALTER SYSTEM SET log_min_error_statement = 'error';\nSELECT pg_reload_conf();\n-- Включение pgAudit оставить как отдельное подтвержденное изменение.",
+			Snippet: "\"integrity\": {\n  \"config_control_enabled\": true,\n  \"checksums_enabled\": true\n},\n\"settings\": {\n  \"integrity_alert_dbms_admin\": \"true\",\n  \"integrity_alert_db_admin\": \"true\",\n  \"integrity_block_system_users\": \"true\",\n  \"integrity_block_db_users\": \"true\"\n}",
 		})}
+	case "INT-002":
+		return []Proposal{mergeProposal(base, Proposal{
+			Key:       "integrity-runtime-daily",
+			Title:     "Организовать суточный контроль целостности в процессе работы",
+			ApplyMode: "Регламент + планировщик задач",
+			Target:    "Контур эксплуатационного контроля",
+			Steps: []string{
+				"Настроить ежедневную проверку целостности процедур и критичных компонентов БД.",
+				"Сохранять результаты проверки в журнале сопровождения или SIEM.",
+				"Зафиксировать параметр integrity_runtime_daily в metadata JSON.",
+			},
+			Snippet: "\"settings\": {\n  \"integrity_runtime_daily\": \"true\"\n}",
+		})}
+	case "AUD-001":
+		return []Proposal{
+			mergeProposal(base, Proposal{
+				Key:          "audit-safe-logging",
+				Title:        "Включить безопасный базовый аудит PostgreSQL",
+				ApplyMode:    "ALTER SYSTEM + pg_reload_conf()",
+				Target:       firstNonEmpty(snapshot.Sources.PostgreSQLConf, "postgresql.conf"),
+				AutoApply:    true,
+				ReloadConfig: true,
+				SQL: []string{
+					"ALTER SYSTEM SET log_connections = 'on'",
+					"ALTER SYSTEM SET log_disconnections = 'on'",
+					"ALTER SYSTEM SET log_min_error_statement = 'error'",
+					"ALTER SYSTEM SET log_line_prefix = '%m [%p] db=%d,user=%u,app=%a,client=%h '",
+					"ALTER SYSTEM SET log_error_verbosity = 'verbose'",
+					"ALTER SYSTEM SET log_file_mode = '0600'",
+					"ALTER SYSTEM SET log_rotation_age = '1d'",
+					"ALTER SYSTEM SET log_rotation_size = '100MB'",
+				},
+				Steps: []string{
+					"Безопасно включить логирование подключений, отключений и ошибок.",
+					"Ограничить доступ к журналам и включить ротацию, чтобы повысить готовность к требованиям ФСТЭК.",
+				},
+				Snippet: "ALTER SYSTEM SET log_connections = 'on';\nALTER SYSTEM SET log_disconnections = 'on';\nALTER SYSTEM SET log_min_error_statement = 'error';\nSELECT pg_reload_conf();",
+			}),
+			mergeProposal(base, Proposal{
+				Key:       "audit-pgaudit-manual",
+				Title:     "Подтвердить подсистему аудита и оповещения администраторов",
+				ApplyMode: "pgAudit или внешний аудит + документация",
+				Target:    "Подсистема регистрации событий",
+				Steps: []string{
+					"Подключить pgAudit или эквивалентный механизм регистрации событий безопасности.",
+					"Подтвердить параметры security_event_alerting, security_log_structured, security_log_read_restricted и security_log_archive_on_full.",
+					"Описать маршрутизацию уведомлений администраторам СУБД и БД.",
+				},
+				Snippet: "\"audit\": {\n  \"enabled\": true,\n  \"provider\": \"pgaudit\",\n  \"log_directory_protected\": true,\n  \"immutable_storage\": true\n}",
+			}),
+		}
+	case "AUD-002":
+		return []Proposal{
+			mergeProposal(base, Proposal{
+				Key:          "audit-safe-logging",
+				Title:        "Включить безопасный базовый аудит PostgreSQL",
+				ApplyMode:    "ALTER SYSTEM + pg_reload_conf()",
+				Target:       firstNonEmpty(snapshot.Sources.PostgreSQLConf, "postgresql.conf"),
+				AutoApply:    true,
+				ReloadConfig: true,
+				SQL: []string{
+					"ALTER SYSTEM SET log_connections = 'on'",
+					"ALTER SYSTEM SET log_disconnections = 'on'",
+					"ALTER SYSTEM SET log_min_error_statement = 'error'",
+					"ALTER SYSTEM SET log_line_prefix = '%m [%p] db=%d,user=%u,app=%a,client=%h '",
+					"ALTER SYSTEM SET log_error_verbosity = 'verbose'",
+					"ALTER SYSTEM SET log_file_mode = '0600'",
+					"ALTER SYSTEM SET log_rotation_age = '1d'",
+					"ALTER SYSTEM SET log_rotation_size = '100MB'",
+				},
+			}),
+			mergeProposal(base, Proposal{
+				Key:       "audit-coverage-metadata",
+				Title:     "Подтвердить обязательный состав событий и реквизитов журнала",
+				ApplyMode: "Metadata JSON + аудит-профиль",
+				Target:    "Структура журнала безопасности",
+				Steps: []string{
+					"Подтвердить регистрацию минимального набора событий безопасности.",
+					"Подтвердить наличие идентификатора события, времени, типа и важности события для 4 класса.",
+					"Привязать профиль журнала к SIEM или журналу сопровождения.",
+				},
+				Snippet: "\"settings\": {\n  \"security_events_minimum_set\": \"true\",\n  \"security_log_has_event_id\": \"true\",\n  \"security_log_has_timestamp\": \"true\",\n  \"security_log_has_event_type\": \"true\",\n  \"security_event_importance\": \"true\"\n}",
+			}),
+		}
 	case "BACKUP-001":
 		return []Proposal{mergeProposal(base, Proposal{
 			Key:       "backup-process",
@@ -502,20 +760,20 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 			Target:    "Контур резервного копирования",
 			Steps: []string{
 				"Настроить регулярный backup базы и конфигурации СУБД.",
-				"Определить срок хранения и шифрование резервных копий.",
+				"Определить срок хранения, шифрование и контроль доступа к резервным копиям.",
 				"Провести и задокументировать тестовое восстановление.",
 			},
-			Snippet: "pg_dump -Fc -d <db_name> -f <backup_file>\n# или настроить base backup / WAL archive по принятой схеме",
+			Snippet: "pg_dump -Fc -d <db_name> -f <backup_file>\n# либо настроить base backup / WAL archive по принятой схеме",
 		})}
 	case "AVAIL-001":
 		return []Proposal{mergeProposal(base, Proposal{
 			Key:       "availability-architecture",
 			Title:     "Подтвердить или внедрить отказоустойчивую схему для требуемого класса",
 			ApplyMode: "Архитектурное изменение",
-			Target:    "Кластер/репликация/обновление",
+			Target:    "Кластер, репликация и обновление",
 			Steps: []string{
-				"Определить целевую HA-схему: primary-standby, Patroni, etcd/Consul или другой утверждённый контур.",
-				"Задокументировать rolling update и rollback без простоя.",
+				"Определить целевую HA-схему: primary-standby, Patroni, etcd/Consul или другой утвержденный контур.",
+				"Задокументировать rolling update и rollback без остановки кластера.",
 				"Подтвердить синхронизацию конфигурации между узлами.",
 			},
 		})}
@@ -523,7 +781,7 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 		return []Proposal{mergeProposal(base, Proposal{
 			Key:       "memory-wipe-policy",
 			Title:     "Закрыть требования по безопасному удалению данных и объектов",
-			ApplyMode: "Оргмеры + защищённая утилизация",
+			ApplyMode: "Оргмеры + защищенная утилизация",
 			Target:    "Политика удаления данных",
 			Steps: []string{
 				"Определить процедуру безопасного удаления файлов БД, журналов и резервных копий.",
@@ -531,29 +789,31 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 				"Отдельно описать удаление объектов БД для усиленных классов.",
 			},
 		})}
+	case "PERF-001":
+		return []Proposal{mergeProposal(base, Proposal{
+			Key:       "performance-evidence",
+			Title:     "Подтвердить документирование показателей производительности",
+			ApplyMode: "Документация и эксплуатационные замеры",
+			Target:    "Паспорт производительности СУБД",
+			Steps: []string{
+				"Зафиксировать измеренные показатели производительности и условия их получения.",
+				"Подтвердить зависимость значений от параметров настройки и среды функционирования.",
+				"Синхронизировать данные с эксплуатационной документацией и профилем объекта.",
+			},
+			Snippet: "\"settings\": {\n  \"performance_metrics_documented\": \"true\",\n  \"performance_dependencies_documented\": \"true\",\n  \"performance_operating_conditions_documented\": \"true\"\n}",
+		})}
 	case "ENV-001":
 		return []Proposal{mergeProposal(base, Proposal{
 			Key:       "environment-hardening",
 			Title:     "Ограничить программную среду и загрузку недоверенного кода",
-			ApplyMode: "Оргмеры + hardening ОС/расширений",
-			Target:    "Host OS / extension policy",
+			ApplyMode: "Оргмеры + hardening ОС и расширений",
+			Target:    "Host OS и политика расширений",
 			Steps: []string{
-				"Утвердить allowlist для расширений и вспомогательного ПО.",
+				"Утвердить allowlist для расширений PostgreSQL и вспомогательного ПО.",
 				"Ограничить установку сторонних библиотек и процедур пользователями БД.",
 				"Контролировать целостность бинарных файлов и shared libraries.",
 			},
-		})}
-	case "INT-001":
-		return []Proposal{mergeProposal(base, Proposal{
-			Key:       "integrity-controls",
-			Title:     "Подтвердить контроль целостности конфигурации и данных",
-			ApplyMode: "Оргмеры + конфигурация кластера",
-			Target:    "Конфигурация PostgreSQL и файловая система",
-			Steps: []string{
-				"Внедрить контроль целостности конфигурационных файлов.",
-				"Проверить возможность включения data checksums для новых инсталляций или при переинициализации кластера.",
-				"Задокументировать процедуру контроля изменений конфигурации.",
-			},
+			Snippet: "\"settings\": {\n  \"allowlist_enabled\": \"true\",\n  \"block_untrusted_code_load\": \"true\",\n  \"block_modified_code_load\": \"true\"\n}",
 		})}
 	default:
 		return []Proposal{mergeProposal(base, Proposal{
@@ -562,7 +822,7 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 			ApplyMode: "Ручная проработка",
 			Target:    finding.Category,
 			Steps: []string{
-				"Сопоставить рекомендацию анализа с текущим регламентом.",
+				"Сопоставить рекомендацию анализа с текущим регламентом и архитектурой объекта.",
 				"Подготовить изменение конфигурации, SQL или эксплуатационной процедуры.",
 				"Повторно запустить анализ живой БД после внесения изменений.",
 			},
@@ -583,7 +843,63 @@ func mergeProposal(base Proposal, extra Proposal) Proposal {
 	if extra.FindingName == "" {
 		extra.FindingName = base.FindingName
 	}
+	if len(extra.ControlRefs) == 0 {
+		extra.ControlRefs = append([]string{}, base.ControlRefs...)
+	}
 	return extra
+}
+
+func collectControlRefs(proposals []Proposal) []string {
+	seen := make(map[string]struct{})
+	var refs []string
+	for _, proposal := range proposals {
+		for _, ref := range proposal.ControlRefs {
+			ref = strings.TrimSpace(ref)
+			if ref == "" {
+				continue
+			}
+			if _, exists := seen[ref]; exists {
+				continue
+			}
+			seen[ref] = struct{}{}
+			refs = append(refs, ref)
+		}
+	}
+	sort.Strings(refs)
+	return refs
+}
+
+func controlRefsForFinding(id string) []string {
+	switch id {
+	case "TRUST-001":
+		return []string{"Приказ ФСТЭК №64, п.5"}
+	case "OS-001":
+		return []string{"Приказ ФСТЭК №64, п.6"}
+	case "ACCESS-001", "ACCESS-002", "ACCESS-003":
+		return []string{"Приказ ФСТЭК №64, п.7.1"}
+	case "AUTH-001", "AUTH-002":
+		return []string{"Приказ ФСТЭК №64, пп.8.1-8.3"}
+	case "INT-001":
+		return []string{"Приказ ФСТЭК №64, п.9.1"}
+	case "INT-002":
+		return []string{"Приказ ФСТЭК №64, п.9.2"}
+	case "AUD-001":
+		return []string{"Приказ ФСТЭК №64, п.10.1"}
+	case "AUD-002":
+		return []string{"Приказ ФСТЭК №64, пп.10.1-10.2"}
+	case "BACKUP-001":
+		return []string{"Приказ ФСТЭК №64, пп.11.1-11.2"}
+	case "AVAIL-001":
+		return []string{"Приказ ФСТЭК №64, п.12"}
+	case "MEM-001":
+		return []string{"Приказ ФСТЭК №64, пп.13.1-13.2"}
+	case "PERF-001":
+		return []string{"Приказ ФСТЭК №64, п.14"}
+	case "ENV-001":
+		return []string{"Приказ ФСТЭК №64, пп.15.1-15.2"}
+	default:
+		return nil
+	}
 }
 
 func priorityWeight(priority string) int {

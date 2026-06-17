@@ -40,6 +40,7 @@ type htmlProposal struct {
 	Priority    string
 	ApplyMode   string
 	Target      string
+	ControlRefs []string
 	Rationale   string
 	FindingID   string
 	FindingName string
@@ -438,6 +439,7 @@ body {
           </div>
         </div>
         {{ if .Target }}<p><strong>Цель изменения:</strong> {{ .Target }}</p>{{ end }}
+        {{ if .ControlRefs }}<p><strong>ФСТЭК:</strong> {{ range $idx, $ref := .ControlRefs }}{{ if $idx }}, {{ end }}{{ $ref }}{{ end }}</p>{{ end }}
         <p><strong>Основание:</strong> {{ .FindingName }} ({{ .FindingID }})</p>
         <p><strong>Почему:</strong> {{ .Rationale }}</p>
         {{ if .Steps }}
@@ -535,6 +537,7 @@ func buildHTMLView(input Input) htmlReportView {
 			Priority:    proposal.Priority,
 			ApplyMode:   proposal.ApplyMode,
 			Target:      proposal.Target,
+			ControlRefs: append([]string{}, proposal.ControlRefs...),
 			Rationale:   proposal.Rationale,
 			FindingID:   proposal.FindingID,
 			FindingName: proposal.FindingName,

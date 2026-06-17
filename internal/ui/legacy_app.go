@@ -65,6 +65,7 @@ func GuiInit() {
 	collectionPreview := newReadOnlyPreview("Здесь появится результат сбора конфигурации из живой PostgreSQL и доступных файлов.")
 	analysisLog := newReadOnlyPreview("Журнал анализа пока пуст.")
 	reportPreview := newReadOnlyPreview("После анализа здесь появится текстовый отчет.")
+	overviewPreview := newReadOnlyPreview("После анализа здесь появится сводка соответствия требованиям ФСТЭК и безопасных шагов усиления.")
 	statusLabel := widget.NewLabel("Ожидание запуска.")
 	progress := widget.NewProgressBarInfinite()
 	progress.Hide()
@@ -146,6 +147,7 @@ func GuiInit() {
 
 	hardeningPreview := newReadOnlyPreview("После анализа здесь появится план усиления.")
 	autoApplyPreview := newReadOnlyPreview("Безопасные автоизменения станут доступны после анализа live-БД.")
+	controlCoveragePreview := newReadOnlyPreview("Здесь будет видно, какие контрольные пункты ФСТЭК закрываются мерами усиления.")
 	var hardeningPlanText string
 
 	var btnConfig, btnAnalyze, btnReport, btnHarden, btnAbout *widget.Button
@@ -207,29 +209,81 @@ func GuiInit() {
 
 	refreshHardeningPlan := func() {
 		if state.lastRun == nil {
+			overviewPreview.SetText("Сначала выполните анализ защищенности.")
 			hardeningPreview.SetText("Сначала выполните анализ защищенности.")
 			autoApplyPreview.SetText("Безопасные автоизменения станут доступны после анализа live-БД.")
+			controlCoveragePreview.SetText("Контрольные пункты ФСТЭК будут показаны после формирования рекомендаций.")
 			return
 		}
-		// Только базовая информация, без тяжёлых вычислений
-		proposals := remediation.Build(state.lastRun.Analysis, state.lastRun.Snapshot)
-		_ = proposals
-		autoApplicable := remediation.AutoApplicable(state.lastRun.Analysis, state.lastRun.Snapshot)
 		hardeningPlanText = ""
-		hardeningPreview.SetText(fmt.Sprintf(
-			"Профиль: %s | Балл: %d/100 | Предупреждений: %d | Несоответствий: %d\n\nПлан усиления сформирован. Нажмите \"Сохранить план усиления\" для экспорта.",
+		dashboard := remediation.BuildDashboard(state.lastRun.Analysis, state.lastRun.Snapshot)
+		proposals := remediation.Build(state.lastRun.Analysis, state.lastRun.Snapshot)
+		autoApplicable := remediation.AutoApplicable(state.lastRun.Analysis, state.lastRun.Snapshot)
+
+		overviewPreview.SetText(compactUIText(fmt.Sprintf(
+			"Профиль: %s\nБалл: %d/100\nНесоответствий: %d\nПредупреждений: %d\nАвтошагов: %d\nРучных шагов: %d",
 			state.lastRun.Analysis.Class.Label(),
 			state.lastRun.Analysis.Score,
-			state.lastRun.Analysis.Summary.Warnings,
-			state.lastRun.Analysis.Summary.Failed,
-		))
-		autoApplyPreview.SetText(fmt.Sprintf(
-			"Безопасных автоизменений: %d\nНажмите \"Применить безопасные изменения\" для запуска.",
-			len(autoApplicable),
-		))
+			dashboard.FailedFindings,
+			dashboard.WarningFindings,
+			dashboard.AutoApplicable,
+			dashboard.ManualActions,
+		), 12, 110))
+
+		if len(autoApplicable) == 0 {
+			autoApplyPreview.SetText("Безопасных автоизменений сейчас нет.")
+		} else {
+			autoLines := []string{fmt.Sprintf("Безопасных автоизменений: %d", len(autoApplicable))}
+			limit := len(autoApplicable)
+			if limit > 3 {
+				limit = 3
+			}
+			for i := 0; i < limit; i++ {
+				autoLines = append(autoLines, "- "+autoApplicable[i].Title)
+			}
+			if len(autoApplicable) > limit {
+				autoLines = append(autoLines, fmt.Sprintf("... ещё %d", len(autoApplicable)-limit))
+			}
+			autoApplyPreview.SetText(strings.Join(autoLines, "\n"))
+		}
+
+		manualCount := 0
+		manualLines := []string{"Ручные меры:"}
+		for _, proposal := range proposals {
+			if proposal.AutoApply {
+				continue
+			}
+			manualCount++
+			if manualCount <= 4 {
+				manualLines = append(manualLines, "- "+proposal.Title)
+			}
+		}
+		if manualCount == 0 {
+			hardeningPreview.SetText("Критичных ручных мер сейчас не требуется.")
+		} else {
+			if manualCount > 4 {
+				manualLines = append(manualLines, fmt.Sprintf("... ещё %d", manualCount-4))
+			}
+			manualLines = append(manualLines, "", "Полный план формируется только при сохранении.")
+			hardeningPreview.SetText(strings.Join(manualLines, "\n"))
+		}
+
+		if len(dashboard.CoveredControlRefs) == 0 {
+			controlCoveragePreview.SetText("Контрольные пункты ФСТЭК для мер усиления не сформированы.")
+		} else {
+			refs := dashboard.CoveredControlRefs
+			if len(refs) > 5 {
+				refs = refs[:5]
+			}
+			controlText := "Покрываемые пункты ФСТЭК:\n- " + strings.Join(refs, "\n- ")
+			if len(dashboard.CoveredControlRefs) > len(refs) {
+				controlText += fmt.Sprintf("\n... ещё %d", len(dashboard.CoveredControlRefs)-len(refs))
+			}
+			controlCoveragePreview.SetText(controlText)
+		}
 	}
 
-	applyAnalysisResult := func(request collector.Request, result service.RunResult) string {
+	applyAnalysisResult := func(_ collector.Request, result service.RunResult) string {
 		state.lastRun = &result
 
 		// Обновляем сводку сбора
@@ -252,10 +306,9 @@ func GuiInit() {
 			result.Analysis.Score,
 		))
 
-		// Базовая информация об усилении
+		// Сразу обновляем панель усиления по актуальным рекомендациям ФСТЭК.
 		hardeningPlanText = ""
-		hardeningPreview.SetText("План усиления доступен. Нажмите \"Обновить план усиления\" на вкладке Усиление.")
-		autoApplyPreview.SetText("Автоусиление доступно после анализа live-БД.")
+		refreshHardeningPlan()
 
 		completionMessage := fmt.Sprintf("Анализ завершен: балл %d/100, предупреждений %d, несоответствий %d.",
 			result.Analysis.Score, result.Analysis.Summary.Warnings, result.Analysis.Summary.Failed)
@@ -607,11 +660,17 @@ func GuiInit() {
 				applyHardeningButton,
 				saveHardeningButton,
 				widget.NewSeparator(),
+				widget.NewLabel("Сводка по усилению:"),
+				overviewPreview,
+				widget.NewSeparator(),
 				widget.NewLabel("Безопасные автоизменения:"),
 				autoApplyPreview,
 				widget.NewSeparator(),
-				widget.NewLabel("План изменений:"),
+				widget.NewLabel("Ручной план изменений:"),
 				hardeningPreview,
+				widget.NewSeparator(),
+				widget.NewLabel("Покрытие контрольных пунктов ФСТЭК:"),
+				controlCoveragePreview,
 			)
 			rightScroller.Content = container.NewPadded(box)
 
