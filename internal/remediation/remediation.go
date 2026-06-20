@@ -605,18 +605,24 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 			}),
 			mergeProposal(base, Proposal{
 				Key:          "auth-session-timeout",
-				Title:        "Ограничить зависшие и простаивающие сессии",
+				Title:        "Ограничить зависшие, простаивающие и неактивные сессии",
 				ApplyMode:    "ALTER SYSTEM + pg_reload_conf()",
 				Target:       firstNonEmpty(snapshot.Sources.PostgreSQLConf, "postgresql.conf"),
 				AutoApply:    true,
 				ReloadConfig: true,
 				SQL: []string{
 					"ALTER SYSTEM SET idle_in_transaction_session_timeout = '15min'",
+					"ALTER SYSTEM SET lock_timeout = '30s'",
+					"ALTER SYSTEM SET tcp_keepalives_idle = '300'",
+					"ALTER SYSTEM SET tcp_keepalives_interval = '30'",
+					"ALTER SYSTEM SET tcp_keepalives_count = '3'",
 				},
 				Steps: []string{
 					"Автоматически закрывать сессии, простаивающие внутри незавершенной транзакции, чтобы снизить риск удержания заблокированной аутентифицированной сессии.",
+					"Ограничить время ожидания блокировки достаточно щадящим порогом (30 секунд), чтобы не повлиять на штатную нагрузку, но прервать аномальное ожидание захваченной сессией.",
+					"Включить TCP keepalive, чтобы сервер обнаруживал и закрывал разорванные «зависшие» соединения вместо бессрочного удержания слота сессии.",
 				},
-				Snippet: "ALTER SYSTEM SET idle_in_transaction_session_timeout = '15min';\nSELECT pg_reload_conf();",
+				Snippet: "ALTER SYSTEM SET idle_in_transaction_session_timeout = '15min';\nALTER SYSTEM SET lock_timeout = '30s';\nALTER SYSTEM SET tcp_keepalives_idle = '300';\nALTER SYSTEM SET tcp_keepalives_interval = '30';\nALTER SYSTEM SET tcp_keepalives_count = '3';\nSELECT pg_reload_conf();",
 			}),
 			mergeProposal(base, Proposal{
 				Key:       "auth-lifecycle-org",
@@ -645,22 +651,30 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 			Snippet: "\"settings\": {\n  \"access_dac_enabled\": \"true\",\n  \"access_rbac_enabled\": \"true\"\n}",
 		})}
 	case "ACCESS-002":
+		publicCreateSQL := []string{"REVOKE CREATE ON SCHEMA public FROM PUBLIC"}
+		publicCreateSteps := []string{
+			"Безопасно отозвать право на создание объектов в схеме public у роли PUBLIC, не затрагивая существующие подключения и права CONNECT.",
+		}
+		publicCreateSnippet := "REVOKE CREATE ON SCHEMA public FROM PUBLIC;"
+		if snapshot.Connection != nil && strings.TrimSpace(snapshot.Connection.Database) != "" {
+			dbStatement := fmt.Sprintf("REVOKE CREATE ON DATABASE %s FROM PUBLIC", quoteIdent(snapshot.Connection.Database))
+			publicCreateSQL = append(publicCreateSQL, dbStatement)
+			publicCreateSteps = append(publicCreateSteps, "Отозвать право создавать новые схемы в подключенной базе данных у роли PUBLIC, не затрагивая право подключения (CONNECT).")
+			publicCreateSnippet += "\n" + dbStatement + ";"
+		}
+		publicCreateSteps = append(publicCreateSteps, "Выдать право CREATE точечно только тем ролям, которым оно действительно требуется.")
+
 		return []Proposal{
 			mergeProposal(base, Proposal{
 				Key:          "access-public-schema-hardening",
-				Title:        "Запретить создание объектов в схеме public для роли PUBLIC",
+				Title:        "Запретить роли PUBLIC создавать объекты и новые схемы",
 				ApplyMode:    "Live SQL (REVOKE)",
-				Target:       "Схема public",
+				Target:       "Схема public и база данных",
 				AutoApply:    true,
 				ReloadConfig: false,
-				SQL: []string{
-					"REVOKE CREATE ON SCHEMA public FROM PUBLIC",
-				},
-				Steps: []string{
-					"Безопасно отозвать право на создание объектов в схеме public у роли PUBLIC, не затрагивая существующие подключения и права CONNECT.",
-					"Выдать право CREATE точечно только тем ролям, которым оно действительно требуется.",
-				},
-				Snippet: "REVOKE CREATE ON SCHEMA public FROM PUBLIC;",
+				SQL:          publicCreateSQL,
+				Steps:        publicCreateSteps,
+				Snippet:      publicCreateSnippet,
 			}),
 			mergeProposal(base, Proposal{
 				Key:       "access-role-model",
@@ -676,18 +690,38 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 			}),
 		}
 	case "ACCESS-003":
-		return []Proposal{mergeProposal(base, Proposal{
-			Key:       "access-acl-model",
-			Title:     "Формализовать матрицы доступа к объектам и процедурам",
-			ApplyMode: "Live SQL + модель прав",
-			Target:    "ACL объектов и процедур",
-			Steps: []string{
-				"Определить ролевую матрицу GRANT и REVOKE по схемам, таблицам и функциям.",
-				"Запретить blanket-доступ для PUBLIC.",
-				"Закрепить минимально необходимые ACL в migration-скриптах и эксплуатационной документации.",
-			},
-			Snippet: "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;\nGRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO <app_role>;\nGRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO <app_role>;",
-		})}
+		return []Proposal{
+			mergeProposal(base, Proposal{
+				Key:          "access-default-privileges-hardening",
+				Title:        "Закрыть blanket-доступ PUBLIC для новых объектов схемы public",
+				ApplyMode:    "Live SQL (ALTER DEFAULT PRIVILEGES)",
+				Target:       "Схема public",
+				AutoApply:    true,
+				ReloadConfig: false,
+				SQL: []string{
+					"ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC",
+					"ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM PUBLIC",
+					"ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC",
+				},
+				Steps: []string{
+					"Изменить права по умолчанию для будущих таблиц, функций и последовательностей схемы public, не затрагивая уже выданные права на существующие объекты.",
+					"Выдавать доступ к новым объектам точечно через явные GRANT прикладным ролям.",
+				},
+				Snippet: "ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC;\nALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON FUNCTIONS FROM PUBLIC;\nALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC;",
+			}),
+			mergeProposal(base, Proposal{
+				Key:       "access-acl-model",
+				Title:     "Формализовать матрицы доступа к объектам и процедурам",
+				ApplyMode: "Live SQL + модель прав",
+				Target:    "ACL объектов и процедур",
+				Steps: []string{
+					"Определить ролевую матрицу GRANT и REVOKE по схемам, таблицам и функциям.",
+					"Запретить blanket-доступ для PUBLIC на уже существующих объектах.",
+					"Закрепить минимально необходимые ACL в migration-скриптах и эксплуатационной документации.",
+				},
+				Snippet: "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;\nGRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO <app_role>;\nGRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO <app_role>;",
+			}),
+		}
 	case "INT-001":
 		return []Proposal{mergeProposal(base, Proposal{
 			Key:       "integrity-controls",
@@ -948,6 +982,10 @@ func severityLabel(severity model.Severity) string {
 	default:
 		return "Низкий"
 	}
+}
+
+func quoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 func firstNonEmpty(values ...string) string {
