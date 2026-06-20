@@ -29,7 +29,7 @@ func GuiInit() {
 	a.Settings().SetTheme(theme.DarkTheme())
 
 	window := a.NewWindow("BD Scan - Анализ защищенности СУБД")
-	window.Resize(fyne.NewSize(920, 560))
+	window.Resize(fyne.NewSize(1180, 760))
 	window.SetMaster()
 	window.CenterOnScreen()
 
@@ -63,9 +63,9 @@ func GuiInit() {
 	metaEntry := widget.NewEntry()
 
 	collectionPreview := newReadOnlyPreview("Здесь появится результат сбора конфигурации из живой PostgreSQL и доступных файлов.")
-	analysisLog := newReadOnlyPreview("Журнал анализа пока пуст.")
+	analysisLog := newReadOnlyPreview("Запустите анализ, чтобы увидеть результаты по каждому контрольному пункту.")
+	analysisResultsArea := container.NewVBox()
 	reportPreview := newReadOnlyPreview("После анализа здесь появится текстовый отчет.")
-	overviewPreview := newReadOnlyPreview("После анализа здесь появится сводка соответствия требованиям ФСТЭК и безопасных шагов усиления.")
 	statusLabel := widget.NewLabel("Ожидание запуска.")
 	progress := widget.NewProgressBarInfinite()
 	progress.Hide()
@@ -145,9 +145,8 @@ func GuiInit() {
 	liveCollectCheck.OnChanged = updateConnectionState
 	updateConnectionState(false)
 
-	hardeningPreview := newReadOnlyPreview("После анализа здесь появится план усиления.")
-	autoApplyPreview := newReadOnlyPreview("Безопасные автоизменения станут доступны после анализа live-БД.")
-	controlCoveragePreview := newReadOnlyPreview("Здесь будет видно, какие контрольные пункты ФСТЭК закрываются мерами усиления.")
+	hardeningResultsArea := container.NewVBox(wrappedLabel("После анализа здесь появится сводка соответствия требованиям ФСТЭК и план усиления."))
+	applyStatusPreview := newReadOnlyPreview("Безопасные автоизменения станут доступны после анализа live-БД.")
 	var hardeningPlanText string
 
 	var btnConfig, btnAnalyze, btnReport, btnHarden, btnAbout *widget.Button
@@ -209,10 +208,11 @@ func GuiInit() {
 
 	refreshHardeningPlan := func() {
 		if state.lastRun == nil {
-			overviewPreview.SetText("Сначала выполните анализ защищенности.")
-			hardeningPreview.SetText("Сначала выполните анализ защищенности.")
-			autoApplyPreview.SetText("Безопасные автоизменения станут доступны после анализа live-БД.")
-			controlCoveragePreview.SetText("Контрольные пункты ФСТЭК будут показаны после формирования рекомендаций.")
+			hardeningResultsArea.Objects = []fyne.CanvasObject{
+				wrappedLabel("Сначала выполните анализ защищенности."),
+			}
+			hardeningResultsArea.Refresh()
+			applyStatusPreview.SetText("Безопасные автоизменения станут доступны после анализа live-БД.")
 			return
 		}
 		hardeningPlanText = ""
@@ -220,67 +220,34 @@ func GuiInit() {
 		proposals := remediation.Build(state.lastRun.Analysis, state.lastRun.Snapshot)
 		autoApplicable := remediation.AutoApplicable(state.lastRun.Analysis, state.lastRun.Snapshot)
 
-		overviewPreview.SetText(compactUIText(fmt.Sprintf(
-			"Профиль: %s\nБалл: %d/100\nНесоответствий: %d\nПредупреждений: %d\nАвтошагов: %d\nРучных шагов: %d",
-			state.lastRun.Analysis.Class.Label(),
-			state.lastRun.Analysis.Score,
-			dashboard.FailedFindings,
-			dashboard.WarningFindings,
-			dashboard.AutoApplicable,
-			dashboard.ManualActions,
-		), 12, 110))
-
-		if len(autoApplicable) == 0 {
-			autoApplyPreview.SetText("Безопасных автоизменений сейчас нет.")
-		} else {
-			autoLines := []string{fmt.Sprintf("Безопасных автоизменений: %d", len(autoApplicable))}
-			limit := len(autoApplicable)
-			if limit > 3 {
-				limit = 3
-			}
-			for i := 0; i < limit; i++ {
-				autoLines = append(autoLines, "- "+autoApplicable[i].Title)
-			}
-			if len(autoApplicable) > limit {
-				autoLines = append(autoLines, fmt.Sprintf("... ещё %d", len(autoApplicable)-limit))
-			}
-			autoApplyPreview.SetText(strings.Join(autoLines, "\n"))
-		}
-
-		manualCount := 0
-		manualLines := []string{"Ручные меры:"}
+		var manualProposals []remediation.Proposal
 		for _, proposal := range proposals {
-			if proposal.AutoApply {
-				continue
+			if !proposal.AutoApply {
+				manualProposals = append(manualProposals, proposal)
 			}
-			manualCount++
-			if manualCount <= 4 {
-				manualLines = append(manualLines, "- "+proposal.Title)
-			}
-		}
-		if manualCount == 0 {
-			hardeningPreview.SetText("Критичных ручных мер сейчас не требуется.")
-		} else {
-			if manualCount > 4 {
-				manualLines = append(manualLines, fmt.Sprintf("... ещё %d", manualCount-4))
-			}
-			manualLines = append(manualLines, "", "Полный план формируется только при сохранении.")
-			hardeningPreview.SetText(strings.Join(manualLines, "\n"))
 		}
 
+		var controlRefsText fyne.CanvasObject
 		if len(dashboard.CoveredControlRefs) == 0 {
-			controlCoveragePreview.SetText("Контрольные пункты ФСТЭК для мер усиления не сформированы.")
+			controlRefsText = wrappedLabel("Контрольные пункты ФСТЭК для мер усиления не сформированы.")
 		} else {
-			refs := dashboard.CoveredControlRefs
-			if len(refs) > 5 {
-				refs = refs[:5]
-			}
-			controlText := "Покрываемые пункты ФСТЭК:\n- " + strings.Join(refs, "\n- ")
-			if len(dashboard.CoveredControlRefs) > len(refs) {
-				controlText += fmt.Sprintf("\n... ещё %d", len(dashboard.CoveredControlRefs)-len(refs))
-			}
-			controlCoveragePreview.SetText(controlText)
+			controlRefsText = wrappedLabel("Покрываемые пункты ФСТЭК: " + strings.Join(dashboard.CoveredControlRefs, "; "))
 		}
+
+		hardeningResultsArea.Objects = []fyne.CanvasObject{
+			coloredText(fmt.Sprintf("Профиль: %s | Балл: %d/100", state.lastRun.Analysis.Class.Label(), state.lastRun.Analysis.Score), 18, true, scoreColor(state.lastRun.Analysis.Score)),
+			buildDashboardChips(dashboard),
+			widget.NewSeparator(),
+			widget.NewLabelWithStyle("Быстрые безопасные шаги (автоприменение)", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			buildProposalRows(autoApplicable, 6, "Безопасных автоизменений сейчас нет."),
+			widget.NewSeparator(),
+			widget.NewLabelWithStyle("Ручной план усиления", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			buildProposalRows(manualProposals, 8, "Критичных ручных мер сейчас не требуется."),
+			widget.NewSeparator(),
+			widget.NewLabelWithStyle("Покрытие контрольных пунктов ФСТЭК", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+			controlRefsText,
+		}
+		hardeningResultsArea.Refresh()
 	}
 
 	applyAnalysisResult := func(_ collector.Request, result service.RunResult) string {
@@ -289,16 +256,14 @@ func GuiInit() {
 		// Обновляем сводку сбора
 		showCollection(result.Snapshot, result.Normalized)
 
-		// Легковесный вывод в журнал анализа
-		summaryText := fmt.Sprintf(
-			"АНАЛИЗ ЗАВЕРШЕН\nПрофиль: %s\nБалл: %d/100\nУспешно: %d | Предупреждений: %d | Несоответствий: %d",
-			result.Analysis.Class.Label(),
-			result.Analysis.Score,
-			result.Analysis.Summary.Passed,
-			result.Analysis.Summary.Warnings,
-			result.Analysis.Summary.Failed,
-		)
-		analysisLog.SetText(compactUIText(summaryText, 80, 140))
+		// Короткая строка статуса плюс структурированный список результатов по каждому пункту.
+		analysisLog.SetText(fmt.Sprintf("Анализ завершен: профиль %s.", result.Analysis.Class.Label()))
+		analysisResultsArea.Objects = []fyne.CanvasObject{
+			buildScoreCard(result.Analysis.Score, result.Analysis.Summary),
+			widget.NewSeparator(),
+			buildFindingsAccordion(result.Analysis.Findings),
+		}
+		analysisResultsArea.Refresh()
 
 		// Заглушка для превью отчёта
 		reportPreview.SetText(fmt.Sprintf(
@@ -377,17 +342,17 @@ func GuiInit() {
 			}
 
 			setBusy(true, "Применяются безопасные изменения к живой PostgreSQL...")
-			autoApplyPreview.SetText("Выполняется автоприменение...")
+			applyStatusPreview.SetText("Выполняется автоприменение...")
 
 			previousAnalysis := state.lastRun.Analysis
 			func() {
 				applyResult, err := remediation.ApplySafeWithProgress(request, previousAnalysis, state.lastRun.Snapshot, func(update remediation.ProgressUpdate) {
 					statusText := fmt.Sprintf("Автоусиление: шаг %d из %d. %s", update.Current, update.Total, update.Message)
 					statusLabel.SetText(statusText)
-					autoApplyPreview.SetText(statusText)
+					applyStatusPreview.SetText(statusText)
 				})
 				if err != nil {
-					autoApplyPreview.SetText("Ошибка автоприменения: " + err.Error())
+					applyStatusPreview.SetText("Ошибка автоприменения: " + err.Error())
 					setBusy(false, "Автоприменение завершилось ошибкой.")
 					dialog.ShowError(err, window)
 					return
@@ -403,7 +368,7 @@ func GuiInit() {
 				}
 
 				if !changesApplied {
-					autoApplyPreview.SetText("Безопасные автоизменения не потребовались.")
+					applyStatusPreview.SetText("Безопасные автоизменения не потребовались.")
 					setBusy(false, "Безопасные автоизменения не потребовались.")
 					dialog.ShowInformation("Усиление", applyResult.Summary(), window)
 					return
@@ -411,14 +376,14 @@ func GuiInit() {
 
 				// Повторный анализ
 				statusLabel.SetText("Автоизменения применены. Запускается повторная проверка...")
-				autoApplyPreview.SetText("Выполняется повторный анализ...")
+				applyStatusPreview.SetText("Выполняется повторный анализ...")
 
 				result, rerunErr := state.runner.Run(service.RunRequest{
 					CollectRequest: request,
 					Class:          state.class,
 				})
 				if rerunErr != nil {
-					autoApplyPreview.SetText("Автоприменение выполнено, но повторный анализ завершился ошибкой.")
+					applyStatusPreview.SetText("Автоприменение выполнено, но повторный анализ завершился ошибкой.")
 					setBusy(false, "Автоприменение завершено, но повторный анализ завершился ошибкой.")
 					dialog.ShowInformation("Усиление", applyResult.Summary()+"\n\nПовторный анализ не удался: "+rerunErr.Error(), window)
 					return
@@ -432,7 +397,7 @@ func GuiInit() {
 					previousAnalysis.Summary.Warnings, result.Analysis.Summary.Warnings,
 					previousAnalysis.Summary.Failed, result.Analysis.Summary.Failed,
 				)
-				autoApplyPreview.SetText(applyResult.Summary() + "\n\n" + verificationSummary)
+				applyStatusPreview.SetText(applyResult.Summary() + "\n\n" + verificationSummary)
 				setBusy(false, "Автоприменение завершено.")
 				dialog.ShowInformation("Усиление", applyResult.Summary()+"\n\n"+verificationSummary, window)
 			}()
@@ -621,8 +586,10 @@ func GuiInit() {
 				wrappedLabel("Выберите профиль контроля и запустите анализ собранной конфигурации."),
 				classSelect,
 				analyzeButton,
-				widget.NewLabel("Журнал выполнения:"),
 				analysisLog,
+				widget.NewSeparator(),
+				widget.NewLabel("Результаты по контрольным пунктам (нажмите на пункт, чтобы раскрыть детали):"),
+				analysisResultsArea,
 			)
 			rightScroller.Content = container.NewPadded(box)
 
@@ -653,24 +620,17 @@ func GuiInit() {
 			applyHardeningButton = widget.NewButtonWithIcon("Применить безопасные изменения", theme.MediaPlayIcon(), applySafeHardening)
 			saveHardeningButton = widget.NewButtonWithIcon("Сохранить план усиления", theme.DocumentSaveIcon(), exportHardeningPlan)
 			box := container.NewVBox(
-				widget.NewLabelWithStyle("Модуль усиления защищенности", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+				widget.NewLabelWithStyle("Модуль усиления защищенности (ФСТЭК №64)", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
 				widget.NewSeparator(),
-				wrappedLabel("Здесь формируется безопасный план изменений для живой PostgreSQL."),
+				wrappedLabel("Здесь формируется безопасный план изменений для живой PostgreSQL и видно, какие пункты приказа №64 уже закрыты."),
 				hardenButton,
 				applyHardeningButton,
 				saveHardeningButton,
 				widget.NewSeparator(),
-				widget.NewLabel("Сводка по усилению:"),
-				overviewPreview,
+				hardeningResultsArea,
 				widget.NewSeparator(),
-				widget.NewLabel("Безопасные автоизменения:"),
-				autoApplyPreview,
-				widget.NewSeparator(),
-				widget.NewLabel("Ручной план изменений:"),
-				hardeningPreview,
-				widget.NewSeparator(),
-				widget.NewLabel("Покрытие контрольных пунктов ФСТЭК:"),
-				controlCoveragePreview,
+				widget.NewLabel("Статус автоприменения:"),
+				applyStatusPreview,
 			)
 			rightScroller.Content = container.NewPadded(box)
 

@@ -604,6 +604,21 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 				Snippet: "ALTER SYSTEM SET password_encryption = 'scram-sha-256';\nSELECT pg_reload_conf();\nALTER ROLE <role> WITH PASSWORD '<new-strong-password>';",
 			}),
 			mergeProposal(base, Proposal{
+				Key:          "auth-session-timeout",
+				Title:        "Ограничить зависшие и простаивающие сессии",
+				ApplyMode:    "ALTER SYSTEM + pg_reload_conf()",
+				Target:       firstNonEmpty(snapshot.Sources.PostgreSQLConf, "postgresql.conf"),
+				AutoApply:    true,
+				ReloadConfig: true,
+				SQL: []string{
+					"ALTER SYSTEM SET idle_in_transaction_session_timeout = '15min'",
+				},
+				Steps: []string{
+					"Автоматически закрывать сессии, простаивающие внутри незавершенной транзакции, чтобы снизить риск удержания заблокированной аутентифицированной сессии.",
+				},
+				Snippet: "ALTER SYSTEM SET idle_in_transaction_session_timeout = '15min';\nSELECT pg_reload_conf();",
+			}),
+			mergeProposal(base, Proposal{
 				Key:       "auth-lifecycle-org",
 				Title:     "Закрыть пробелы жизненного цикла аутентификации",
 				ApplyMode: "Оргмеры + внешняя интеграция",
@@ -630,18 +645,36 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 			Snippet: "\"settings\": {\n  \"access_dac_enabled\": \"true\",\n  \"access_rbac_enabled\": \"true\"\n}",
 		})}
 	case "ACCESS-002":
-		return []Proposal{mergeProposal(base, Proposal{
-			Key:       "access-role-model",
-			Title:     "Пересобрать ролевую модель и сократить избыточные полномочия",
-			ApplyMode: "Live SQL + ревизия ролей",
-			Target:    "Роли и привилегии PostgreSQL",
-			Steps: []string{
-				"Выделить отдельные роли администратора СУБД, администратора БД и прикладного пользователя.",
-				"Сократить число SUPERUSER-ролей до минимально необходимого набора.",
-				"Проверить права роли public и избыточные атрибуты REPLICATION и BYPASSRLS.",
-			},
-			Snippet: "REVOKE CREATE ON SCHEMA public FROM PUBLIC;\nREVOKE ALL ON DATABASE <db_name> FROM PUBLIC;\nALTER ROLE <role> NOSUPERUSER NOBYPASSRLS NOREPLICATION;",
-		})}
+		return []Proposal{
+			mergeProposal(base, Proposal{
+				Key:          "access-public-schema-hardening",
+				Title:        "Запретить создание объектов в схеме public для роли PUBLIC",
+				ApplyMode:    "Live SQL (REVOKE)",
+				Target:       "Схема public",
+				AutoApply:    true,
+				ReloadConfig: false,
+				SQL: []string{
+					"REVOKE CREATE ON SCHEMA public FROM PUBLIC",
+				},
+				Steps: []string{
+					"Безопасно отозвать право на создание объектов в схеме public у роли PUBLIC, не затрагивая существующие подключения и права CONNECT.",
+					"Выдать право CREATE точечно только тем ролям, которым оно действительно требуется.",
+				},
+				Snippet: "REVOKE CREATE ON SCHEMA public FROM PUBLIC;",
+			}),
+			mergeProposal(base, Proposal{
+				Key:       "access-role-model",
+				Title:     "Пересобрать ролевую модель и сократить избыточные полномочия",
+				ApplyMode: "Live SQL + ревизия ролей",
+				Target:    "Роли и привилегии PostgreSQL",
+				Steps: []string{
+					"Выделить отдельные роли администратора СУБД, администратора БД и прикладного пользователя.",
+					"Сократить число SUPERUSER-ролей до минимально необходимого набора.",
+					"Проверить права роли public и избыточные атрибуты REPLICATION и BYPASSRLS.",
+				},
+				Snippet: "REVOKE ALL ON DATABASE <db_name> FROM PUBLIC;\nALTER ROLE <role> NOSUPERUSER NOBYPASSRLS NOREPLICATION;",
+			}),
+		}
 	case "ACCESS-003":
 		return []Proposal{mergeProposal(base, Proposal{
 			Key:       "access-acl-model",
@@ -683,29 +716,7 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 		})}
 	case "AUD-001":
 		return []Proposal{
-			mergeProposal(base, Proposal{
-				Key:          "audit-safe-logging",
-				Title:        "Включить безопасный базовый аудит PostgreSQL",
-				ApplyMode:    "ALTER SYSTEM + pg_reload_conf()",
-				Target:       firstNonEmpty(snapshot.Sources.PostgreSQLConf, "postgresql.conf"),
-				AutoApply:    true,
-				ReloadConfig: true,
-				SQL: []string{
-					"ALTER SYSTEM SET log_connections = 'on'",
-					"ALTER SYSTEM SET log_disconnections = 'on'",
-					"ALTER SYSTEM SET log_min_error_statement = 'error'",
-					"ALTER SYSTEM SET log_line_prefix = '%m [%p] db=%d,user=%u,app=%a,client=%h '",
-					"ALTER SYSTEM SET log_error_verbosity = 'verbose'",
-					"ALTER SYSTEM SET log_file_mode = '0600'",
-					"ALTER SYSTEM SET log_rotation_age = '1d'",
-					"ALTER SYSTEM SET log_rotation_size = '100MB'",
-				},
-				Steps: []string{
-					"Безопасно включить логирование подключений, отключений и ошибок.",
-					"Ограничить доступ к журналам и включить ротацию, чтобы повысить готовность к требованиям ФСТЭК.",
-				},
-				Snippet: "ALTER SYSTEM SET log_connections = 'on';\nALTER SYSTEM SET log_disconnections = 'on';\nALTER SYSTEM SET log_min_error_statement = 'error';\nSELECT pg_reload_conf();",
-			}),
+			auditSafeLoggingProposal(base, snapshot),
 			mergeProposal(base, Proposal{
 				Key:       "audit-pgaudit-manual",
 				Title:     "Подтвердить подсистему аудита и оповещения администраторов",
@@ -721,24 +732,7 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 		}
 	case "AUD-002":
 		return []Proposal{
-			mergeProposal(base, Proposal{
-				Key:          "audit-safe-logging",
-				Title:        "Включить безопасный базовый аудит PostgreSQL",
-				ApplyMode:    "ALTER SYSTEM + pg_reload_conf()",
-				Target:       firstNonEmpty(snapshot.Sources.PostgreSQLConf, "postgresql.conf"),
-				AutoApply:    true,
-				ReloadConfig: true,
-				SQL: []string{
-					"ALTER SYSTEM SET log_connections = 'on'",
-					"ALTER SYSTEM SET log_disconnections = 'on'",
-					"ALTER SYSTEM SET log_min_error_statement = 'error'",
-					"ALTER SYSTEM SET log_line_prefix = '%m [%p] db=%d,user=%u,app=%a,client=%h '",
-					"ALTER SYSTEM SET log_error_verbosity = 'verbose'",
-					"ALTER SYSTEM SET log_file_mode = '0600'",
-					"ALTER SYSTEM SET log_rotation_age = '1d'",
-					"ALTER SYSTEM SET log_rotation_size = '100MB'",
-				},
-			}),
+			auditSafeLoggingProposal(base, snapshot),
 			mergeProposal(base, Proposal{
 				Key:       "audit-coverage-metadata",
 				Title:     "Подтвердить обязательный состав событий и реквизитов журнала",
@@ -828,6 +822,34 @@ func buildProposal(finding model.Finding, result model.AnalysisResult, snapshot 
 			},
 		})}
 	}
+}
+
+func auditSafeLoggingProposal(base Proposal, snapshot model.ConfigSnapshot) Proposal {
+	return mergeProposal(base, Proposal{
+		Key:          "audit-safe-logging",
+		Title:        "Включить безопасный базовый аудит PostgreSQL",
+		ApplyMode:    "ALTER SYSTEM + pg_reload_conf()",
+		Target:       firstNonEmpty(snapshot.Sources.PostgreSQLConf, "postgresql.conf"),
+		AutoApply:    true,
+		ReloadConfig: true,
+		SQL: []string{
+			"ALTER SYSTEM SET log_connections = 'on'",
+			"ALTER SYSTEM SET log_disconnections = 'on'",
+			"ALTER SYSTEM SET log_min_error_statement = 'error'",
+			"ALTER SYSTEM SET log_line_prefix = '%m [%p] db=%d,user=%u,app=%a,client=%h '",
+			"ALTER SYSTEM SET log_error_verbosity = 'verbose'",
+			"ALTER SYSTEM SET log_file_mode = '0600'",
+			"ALTER SYSTEM SET log_rotation_age = '1d'",
+			"ALTER SYSTEM SET log_rotation_size = '100MB'",
+			"ALTER SYSTEM SET log_statement = 'ddl'",
+		},
+		Steps: []string{
+			"Безопасно включить логирование подключений, отключений и ошибок.",
+			"Ограничить доступ к журналам и включить ротацию, чтобы повысить готовность к требованиям ФСТЭК.",
+			"Регистрировать DDL- и ролевые события (CREATE/ALTER/DROP, управление ролями) для покрытия обязательного набора событий безопасности.",
+		},
+		Snippet: "ALTER SYSTEM SET log_connections = 'on';\nALTER SYSTEM SET log_disconnections = 'on';\nALTER SYSTEM SET log_min_error_statement = 'error';\nALTER SYSTEM SET log_statement = 'ddl';\nSELECT pg_reload_conf();",
+	})
 }
 
 func mergeProposal(base Proposal, extra Proposal) Proposal {
