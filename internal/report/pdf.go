@@ -5,111 +5,53 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/go-pdf/fpdf"
+
+	"bd-scan/internal/assets"
 	"bd-scan/internal/model"
 )
 
+const (
+	pdfFontFamily    = "NotoSans"
+	pdfTitleFontSize = 14.0
+	pdfBodyFontSize  = 10.0
+	pdfLineHeight    = 5.0
+)
+
+// renderPDF builds the PDF report from the same plain-text content as the TXT
+// report, using an embedded Unicode TrueType font (Noto Sans) so Cyrillic
+// text renders correctly. The standard 14 PDF fonts (e.g. Helvetica) only
+// cover Latin/WinAnsi glyphs and cannot represent Cyrillic at all, which is
+// why earlier output showed garbled characters.
 func renderPDF(result model.AnalysisResult) ([]byte, error) {
 	text := string(renderText(result))
-	lines := wrapLines(strings.Split(text, "\n"), 92)
-	if len(lines) == 0 {
-		lines = []string{"BD Analyzer"}
-	}
+	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 
-	pages := chunk(lines, 44)
-	if len(pages) == 0 {
-		pages = [][]string{{"BD Analyzer"}}
-	}
+	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.SetAutoPageBreak(true, 15)
+	pdf.SetMargins(15, 15, 15)
+	pdf.AddUTF8FontFromBytes(pdfFontFamily, "", assets.NotoSansRegular)
+	pdf.AddUTF8FontFromBytes(pdfFontFamily, "B", assets.NotoSansBold)
+	pdf.AddPage()
 
-	objects := map[int]string{
-		1: "<< /Type /Catalog /Pages 2 0 R >>",
-		3: "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
-	}
-
-	kids := make([]string, 0, len(pages))
-	nextID := 4
-	for _, pageLines := range pages {
-		pageID := nextID
-		contentID := nextID + 1
-		nextID += 2
-
-		kids = append(kids, fmt.Sprintf("%d 0 R", pageID))
-		objects[pageID] = fmt.Sprintf("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents %d 0 R >>", contentID)
-
-		content := buildPDFContent(pageLines)
-		objects[contentID] = fmt.Sprintf("<< /Length %d >>\nstream\n%s\nendstream", len(content), content)
-	}
-
-	objects[2] = fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), len(kids))
-
-	var buffer bytes.Buffer
-	buffer.WriteString("%PDF-1.4\n")
-
-	offsets := make([]int, nextID)
-	for id := 1; id < nextID; id++ {
-		offsets[id] = buffer.Len()
-		buffer.WriteString(fmt.Sprintf("%d 0 obj\n%s\nendobj\n", id, objects[id]))
-	}
-
-	xrefOffset := buffer.Len()
-	buffer.WriteString(fmt.Sprintf("xref\n0 %d\n", nextID))
-	buffer.WriteString("0000000000 65535 f \n")
-	for id := 1; id < nextID; id++ {
-		buffer.WriteString(fmt.Sprintf("%010d 00000 n \n", offsets[id]))
-	}
-	buffer.WriteString(fmt.Sprintf("trailer << /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF", nextID, xrefOffset))
-
-	return buffer.Bytes(), nil
-}
-
-func buildPDFContent(lines []string) string {
-	var builder strings.Builder
-	builder.WriteString("BT\n/F1 10 Tf\n14 TL\n50 790 Td\n")
 	for index, line := range lines {
-		if index > 0 {
-			builder.WriteString("T*\n")
-		}
-		builder.WriteString(fmt.Sprintf("(%s) Tj\n", escapePDFText(line)))
-	}
-	builder.WriteString("ET")
-	return builder.String()
-}
-
-func escapePDFText(value string) string {
-	replacer := strings.NewReplacer("\\", "\\\\", "(", "\\(", ")", "\\)")
-	return replacer.Replace(value)
-}
-
-func wrapLines(lines []string, width int) []string {
-	var wrapped []string
-	for _, line := range lines {
-		remaining := strings.TrimRight(line, "\r")
-		if remaining == "" {
-			wrapped = append(wrapped, "")
+		if line == "" {
+			pdf.Ln(pdfLineHeight)
 			continue
 		}
 
-		for len(remaining) > width {
-			split := strings.LastIndex(remaining[:width], " ")
-			if split <= 0 {
-				split = width
-			}
-			wrapped = append(wrapped, strings.TrimSpace(remaining[:split]))
-			remaining = strings.TrimSpace(remaining[split:])
+		if index == 0 {
+			pdf.SetFont(pdfFontFamily, "B", pdfTitleFontSize)
+		} else {
+			pdf.SetFont(pdfFontFamily, "", pdfBodyFontSize)
 		}
-		wrapped = append(wrapped, remaining)
+		pdf.MultiCell(0, pdfLineHeight, line, "", "L", false)
 	}
-	return wrapped
-}
 
-func chunk(lines []string, size int) [][]string {
-	var pages [][]string
-	for len(lines) > 0 {
-		if len(lines) < size {
-			pages = append(pages, append([]string{}, lines...))
-			break
-		}
-		pages = append(pages, append([]string{}, lines[:size]...))
-		lines = lines[size:]
+	var buffer bytes.Buffer
+	if err := pdf.Output(&buffer); err != nil {
+		return nil, fmt.Errorf("не удалось сформировать PDF-отчет: %w", err)
 	}
-	return pages
+
+	return buffer.Bytes(), nil
 }
