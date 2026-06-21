@@ -67,6 +67,8 @@ func GuiInit() {
 	analysisResultsArea := container.NewVBox()
 	reportPreview := newReadOnlyPreview("После анализа здесь появится текстовый отчет.")
 	statusLabel := widget.NewLabel("Ожидание запуска.")
+	// Виден на любой вкладке, а не только при открытии вкладки "Анализ".
+	footerScoreBadge := container.NewHBox(widget.NewLabel("Балл появится после запуска анализа"))
 	progress := widget.NewProgressBarInfinite()
 	progress.Hide()
 	var busy atomic.Bool
@@ -265,6 +267,11 @@ func GuiInit() {
 		}
 		analysisResultsArea.Refresh()
 
+		// Бейдж балла виден в нижней панели на любой вкладке, не только при
+		// открытии вкладки "Анализ".
+		footerScoreBadge.Objects = []fyne.CanvasObject{buildCompactScoreBadge(result.Analysis.Score, result.Analysis.Summary)}
+		footerScoreBadge.Refresh()
+
 		// Заглушка для превью отчёта
 		reportPreview.SetText(fmt.Sprintf(
 			"Анализ завершен (балл: %d/100).\n\nПредпросмотр отключен для производительности.\nПерейдите к сохранению отчета — будет сформирован полный документ.",
@@ -389,8 +396,20 @@ func GuiInit() {
 					return
 				}
 
-				// Обновляем состояние
+				// Обновляем состояние и все зависимые виджеты (вкладка "Анализ",
+				// бейдж в нижней панели), не только текст на этой вкладке.
 				state.lastRun = &result
+				analysisLog.SetText(fmt.Sprintf("Анализ завершен: профиль %s.", result.Analysis.Class.Label()))
+				analysisResultsArea.Objects = []fyne.CanvasObject{
+					buildScoreCard(result.Analysis.Score, result.Analysis.Summary),
+					widget.NewSeparator(),
+					buildFindingsAccordion(result.Analysis.Findings),
+				}
+				analysisResultsArea.Refresh()
+				footerScoreBadge.Objects = []fyne.CanvasObject{buildCompactScoreBadge(result.Analysis.Score, result.Analysis.Summary)}
+				footerScoreBadge.Refresh()
+				refreshHardeningPlan()
+
 				verificationSummary := fmt.Sprintf(
 					"ПРОВЕРКА РЕЗУЛЬТАТА\nБаллы: %d -> %d/100\nПредупреждений: %d -> %d\nНесоответствий: %d -> %d",
 					previousAnalysis.Score, result.Analysis.Score,
@@ -588,8 +607,7 @@ func GuiInit() {
 				analyzeButton,
 				analysisLog,
 				widget.NewSeparator(),
-				widget.NewLabel("Результаты по контрольным пунктам (нажмите на пункт, чтобы раскрыть детали):"),
-				analysisResultsArea,
+				widget.NewCard("Результаты по контрольным пунктам", "Нажмите на пункт, чтобы раскрыть детали", analysisResultsArea),
 			)
 			rightScroller.Content = container.NewPadded(box)
 
@@ -627,7 +645,7 @@ func GuiInit() {
 				applyHardeningButton,
 				saveHardeningButton,
 				widget.NewSeparator(),
-				hardeningResultsArea,
+				widget.NewCard("Сводка усиления и покрытие ФСТЭК №64", "", hardeningResultsArea),
 				widget.NewSeparator(),
 				widget.NewLabel("Статус автоприменения:"),
 				applyStatusPreview,
@@ -666,7 +684,7 @@ func GuiInit() {
 	topButtons := widget.NewVBox(btnConfig, btnAnalyze, btnReport, btnHarden)
 	leftPanel := container.NewBorder(nil, btnAbout, nil, nil, topButtons)
 
-	footer := container.NewHBox(progress, layout.NewSpacer(), statusLabel, layout.NewSpacer(), widget.NewLabel("BD Scan v1.0"))
+	footer := container.NewHBox(progress, layout.NewSpacer(), statusLabel, layout.NewSpacer(), footerScoreBadge)
 
 	setContent(0)
 

@@ -98,6 +98,18 @@ func buildScoreCard(score int, summary model.Summary) fyne.CanvasObject {
 	return container.NewVBox(scoreText, chips)
 }
 
+// buildCompactScoreBadge renders a single-line, color-coded score summary meant for
+// the footer bar, so the result stays visible on every tab instead of only on the
+// Analysis tab after the user opens it.
+func buildCompactScoreBadge(score int, summary model.Summary) fyne.CanvasObject {
+	return container.NewHBox(
+		coloredText(fmt.Sprintf("Балл: %d/100", score), 14, true, scoreColor(score)),
+		coloredText(fmt.Sprintf("✓%d", summary.Passed), 14, true, theme.PrimaryColorNamed(theme.ColorGreen)),
+		coloredText(fmt.Sprintf("⚠%d", summary.Warnings), 14, true, theme.PrimaryColorNamed(theme.ColorOrange)),
+		coloredText(fmt.Sprintf("✗%d", summary.Failed), 14, true, theme.PrimaryColorNamed(theme.ColorRed)),
+	)
+}
+
 // buildDashboardChips renders the remediation dashboard counters as colored chips.
 func buildDashboardChips(dashboard remediation.Dashboard) fyne.CanvasObject {
 	return container.NewHBox(
@@ -139,7 +151,13 @@ func buildFindingsAccordion(findings []model.Finding) *widget.Accordion {
 			detail.Add(wrappedLabel("Рекомендация: " + finding.Recommendation))
 		}
 
-		accordion.Append(widget.NewAccordionItem(title, detail))
+		item := widget.NewAccordionItem(title, detail)
+		// Самые критичные несоответствия раскрыты сразу, чтобы их было видно
+		// без необходимости открывать каждый пункт вручную; остальное свернуто.
+		if finding.Status == model.StatusFail && (finding.Severity == model.SeverityCritical || finding.Severity == model.SeverityHigh) {
+			item.Open = true
+		}
+		accordion.Append(item)
 	}
 
 	return accordion

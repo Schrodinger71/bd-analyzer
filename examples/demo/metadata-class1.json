@@ -1,0 +1,119 @@
+{
+  "settings": {
+    "dbms_trust_level": "4",
+
+    "os_certified": "true",
+    "os_protection_class": "1",
+
+    "access_dac_enabled": "true",
+    "access_rbac_enabled": "true",
+
+    "role_dbms_admin_present": "true",
+    "role_db_admin_present": "true",
+    "role_db_user_present": "true",
+    "dbms_admin_rights_complete": "true",
+    "db_admin_rights_complete": "true",
+    "db_user_rights_complete": "true",
+
+    "procedure_acl_supported": "true",
+    "object_acl_supported": "true",
+
+    "password_min_length": "16",
+    "password_alphabet_size": "96",
+    "auth_max_failed_attempts": "3",
+
+    "password_encryption": "scram-sha-256",
+    "password_change_on_first_login": "true",
+    "auth_lockout_enabled": "true",
+    "auth_unlock_supported": "true",
+    "password_input_masking": "true",
+    "auth_storage_protected": "true",
+
+    "integrity_alert_dbms_admin": "true",
+    "integrity_alert_db_admin": "true",
+    "integrity_block_system_users": "true",
+    "integrity_block_db_users": "true",
+    "integrity_runtime_daily": "true",
+
+    "security_audit_enabled": "true",
+    "security_event_alerting": "true",
+    "security_log_structured": "true",
+    "security_log_read_restricted": "true",
+    "security_log_archive_on_full": "true",
+    "security_events_minimum_set": "true",
+    "security_log_has_event_id": "true",
+    "security_log_has_timestamp": "true",
+    "security_log_has_event_type": "true",
+    "security_event_importance": "true",
+
+    "backup_config_included": "true",
+
+    "cluster_enabled": "true",
+    "cluster_config_sync": "true",
+    "rolling_update_supported": "true",
+    "rollback_without_downtime": "true",
+
+    "memory_wipe_db_and_logs": "true",
+    "memory_wipe_db_objects": "true",
+
+    "performance_sessions_documented": "true",
+    "performance_queries_documented": "true",
+    "performance_transactions_documented": "true",
+    "performance_latency_documented": "true",
+    "performance_lb_instances_documented": "true",
+
+    "allowlist_enabled": "true",
+    "block_untrusted_code_load": "true",
+    "db_user_create_procedures_restricted": "true",
+    "memory_wx_exclusive": "true",
+    "block_modified_code_load": "true"
+  },
+  "audit": {
+    "enabled": true,
+    "provider": "pgaudit",
+    "events": ["ddl", "role", "read", "write", "ddl_extended"],
+    "log_directory_protected": true,
+    "immutable_storage": true
+  },
+  "backup": {
+    "enabled": true,
+    "schedule": "hourly",
+    "retention_days": 90,
+    "encrypted": true,
+    "tested_restore": true
+  },
+  "integrity": {
+    "config_control_enabled": true,
+    "checksums_enabled": true
+  },
+  "roles": [
+    {
+      "name": "postgres",
+      "login": true,
+      "superuser": true,
+      "inherit": true,
+      "comment": "Единственная учетная запись с правами SUPERUSER (администратор СУБД) — минимально необходимый набор."
+    },
+    {
+      "name": "db_admin",
+      "login": true,
+      "create_db": true,
+      "create_role": true,
+      "inherit": true,
+      "comment": "Администратор базы данных без полномочий SUPERUSER."
+    },
+    {
+      "name": "app_user",
+      "login": true,
+      "inherit": true,
+      "member_of": ["app_readonly"],
+      "comment": "Прикладная роль с минимально необходимыми правами (отдельно от ролей администрирования)."
+    }
+  ],
+  "notes": [
+    "Эталонный пример metadata JSON для максимального профиля контроля (1 класс защиты) по приказу ФСТЭК России №64.",
+    "Файл рассчитан на полное прохождение всех контрольных пунктов модуля анализа (internal/analyzer/rules64.go) — используйте его как образец структуры и замените значения фактическими сведениями о вашем объекте информатизации.",
+    "Подключается отдельно через поле «metadata JSON» как в CLI (-meta), так и в GUI — независимо от того, анализируется живая PostgreSQL (host/port/login) или локальные postgresql.conf/pg_hba.conf/pg_ident.conf. Сведения из metadata JSON дополняют, а не заменяют то, что удалось собрать автоматически, и имеют приоритет при совпадении параметров.",
+    "Часть параметров (например, access_dac_enabled, role_dbms_admin_present) могла бы быть выведена автоматически из ролей и логирования (см. internal/normalize/normalize.go), но здесь указана явно для наглядности эталонного профиля."
+  ]
+}
